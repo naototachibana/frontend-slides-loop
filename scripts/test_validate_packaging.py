@@ -414,6 +414,27 @@ class TestValidatorNegative(unittest.TestCase):
         rc, output = run_validator(self.tmpdir)
         self.assertEqual(rc, 0, f"Clean repo should pass. Output: {output[:500]}")
 
+    # FSL-163: upstream URL in both attribution and install contexts
+    def test_upstream_url_in_attribution_and_install(self):
+        """Upstream URL in both credits + install must be flagged as install."""
+        readme_path = os.path.join(self.tmpdir, "README.md")
+        with open(readme_path) as f:
+            content = f.read()
+        # Add upstream URL in credits (attribution context)
+        content = content.replace(
+            "Created by [@zarazhangrui](https://github.com/zarazhangrui).",
+            "Upstream: https://github.com/zarazhangrui/frontend-slides.git"
+        )
+        # Add install URL pointing to upstream
+        content = content.replace(
+            "git clone https://github.com/naototachibana/frontend-slides-loop.git",
+            "git clone https://github.com/zarazhangrui/frontend-slides.git"
+        )
+        with open(readme_path, "w") as f:
+            f.write(content)
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-UPSTREAM-INSTALL")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -189,21 +189,15 @@ if os.path.exists(README_MD):
     install_urls = []
     attribution_urls = []
 
-    for url in github_urls:  # FSL-152: check every occurrence independently
-        url_line = None
-        for i, line in enumerate(readme.split("\n")):
+    for url in github_urls:
+        lines = readme.split("\n")
+        for i, line in enumerate(lines):
             if url in line:
-                url_line = i
-                break
-        if url_line is not None:
-            lines = readme.split("\n")
-            check_text = " ".join(lines[max(0, url_line-1):url_line+1]).lower()
-            if any(ctx in check_text for ctx in ["upstream", "attribution", "credit", "originate"]):
-                attribution_urls.append(url)
-            else:
-                install_urls.append(url)
-        else:
-            install_urls.append(url)
+                check_text = " ".join(lines[max(0, i-1):i+1]).lower()
+                if any(ctx in check_text for ctx in ["upstream", "attribution", "credit", "originate"]):
+                    attribution_urls.append(url)
+                else:
+                    install_urls.append(url)
 
     # Check that INSTALL urls point to the fork
     fork_url = "naototachibana/frontend-slides-loop"

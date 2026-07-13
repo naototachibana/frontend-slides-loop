@@ -156,6 +156,28 @@ class TestPayloadPreservation(unittest.TestCase):
         mapping = {i: i for i in range(1, 5)}
         self._check_ratios(extract_payloads(batch_renumber(self.deck, mapping)))
 
+    # FSL-162: Counter replacement must not touch payload text
+    def test_payload_with_counter_like_text_preserved(self):
+        """Payload containing '05 / ratio' must survive resequence."""
+        f = make_slide_fragment(5, 10, "topic-005",
+                                "Version 05 / detail and 05 / ratio")
+        deck = make_deck(1, stable_ids=True)
+        # Replace the first slide's payload
+        old_slide = parse_slides(deck)[0]['full_html']
+        new_slide = old_slide.replace(
+            '<p>payload-001</p>',
+            '<p>Version 05 / detail and 05 / ratio</p>'
+        )
+        deck = deck.replace(old_slide, new_slide, 1)
+
+        r = resequence(deck)
+        payloads = extract_payloads(r)
+        self.assertIn("Version 05 / detail and 05 / ratio",
+                      payloads[0] if payloads else "",
+                      "Counter-like payload text was damaged")
+        # Also verify counter is correct
+        self.assertIn("01 / 01", r, "Counter value incorrect after resequence")
+
 
 class TestRichContentPreservation(unittest.TestCase):
     """FSL-149: Full HTML content preservation (multiple <p>, images,

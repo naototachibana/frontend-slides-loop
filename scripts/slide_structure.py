@@ -162,75 +162,6 @@ def _replace_slide_in_deck(deck_html: str, old_slide_html: str,
     return deck_html.replace(old_slide_html, new_slide_html, 1)
 
 
-def _update_slide_numbering(slide_html: str,
-                            old_num: int, new_num: int,
-                            total: int,
-                            data_id: str = None) -> str:
-    """Update positional metadata within an existing slide's HTML.
-
-    Performs targeted replacements only on:
-      - class: slide-NN → slide-MM
-      - comment: SLIDE NN → SLIDE MM
-      - <div class="counter">: NN / TT → MM / TT
-      - positional data-slide-id="slide-NN" → "slide-MM"
-
-    Preserves ALL other content: extra classes, attributes, styles,
-    images, multiple <p> tags, card elements, SVG, scripts, etc.
-    """
-    old_str = f"{old_num:02d}"
-    new_str = f"{new_num:02d}"
-    total_str = f"{total:02d}"
-
-    result = slide_html
-
-    # 1. Class attribute (first occurrence of slide-NN pattern)
-    result = result.replace(
-        f'slide-{old_str}',
-        f'slide-{new_str}',
-        1,
-    )
-
-    # 2. HTML comment
-    result = result.replace(
-        f'SLIDE {old_str}',
-        f'SLIDE {new_str}',
-        1,
-    )
-
-    # 3. Positional data-slide-id (slide-NN format only)
-    result = result.replace(
-        f'data-slide-id="slide-{old_str}"',
-        f'data-slide-id="slide-{new_str}"',
-        1,
-    )
-
-    # 4. <div class="counter"> content
-    # Match the exact counter text to avoid damaging payload
-    result = result.replace(
-        f'>{old_str} / {old_total_str}',
-        f'>{new_str} / {total_str}',
-        1,
-    ) if False else result  # placeholder
-
-    # Actually do the replacement properly:
-    counter_old = f'>{old_str} / '
-    result = result.replace(counter_old, f'>{new_str} / ', 1)
-
-    # If data_id is provided and differs from positional, keep it
-    if data_id and not data_id.startswith(f'slide-{new_str}'):
-        pass  # non-positional IDs are preserved as-is
-
-    return result
-
-
-# Extract old total from the slide HTML for counter replacement
-def _slide_counter_total(slide_html: str) -> int:
-    m = COUNTER_PATTERN.search(slide_html)
-    if m:
-        return int(m.group(2))
-    return 0
-
-
 # ---------------------------------------------------------------------------
 # Fragment validation
 # ---------------------------------------------------------------------------
@@ -437,16 +368,14 @@ def resequence(deck_html: str) -> str:
             f'data-slide-id="slide-{new_str}"',
         )
 
-        # Counter — match the exact padded format
-        new_html = new_html.replace(
-            f'>{old_str} / ',
-            f'>{new_str} / ',
-        )
-        if old_total != total:
-            new_html = new_html.replace(
-                f' {old_total:02d}<',
-                f' {total_str}<',
+        # Counter — scope replacement to <div class="counter"> only (FSL-162)
+        counter_match = COUNTER_PATTERN.search(new_html)
+        if counter_match:
+            old_counter_text = counter_match.group(0)
+            new_counter_text = (
+                f'<div class="counter">{new_str} / {total_str}</div>'
             )
+            new_html = new_html.replace(old_counter_text, new_counter_text, 1)
 
         result = _replace_slide_in_deck(result, s['full_html'], new_html)
 
