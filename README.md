@@ -16,6 +16,8 @@ New here? This beginner-friendly video walks you through the whole thing, start 
 
 **Frontend Slides** helps non-designers create beautiful web presentations without knowing CSS or JavaScript. It uses a "show, don't tell" approach: instead of asking you to describe your aesthetic preferences in words, it generates visual previews and lets you pick what you like.
 
+Once the first draft exists, **[iterative-slide-workflow.md](iterative-slide-workflow.md)** guides agents through structured refinement: slide insertion/deletion, visual verification via screenshots, image replacement, layout editing, and an iterative fix → verify → repeat loop.
+
 Here is a deck about the skill, made through the skill:
 
 https://github.com/user-attachments/assets/ef57333e-f879-432a-afb9-180388982478
