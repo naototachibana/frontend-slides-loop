@@ -1,6 +1,6 @@
 ---
 name: frontend-slides
-description: Create stunning, animation-rich HTML presentations from scratch or by converting PowerPoint files. Use when the user wants to build a presentation, convert a PPT/PPTX to web, or create slides for a talk/pitch. Helps non-designers discover their aesthetic through visual exploration rather than abstract choices.
+description: Create stunning, animation-rich HTML presentations from scratch, convert PowerPoint files, or enhance existing HTML slide decks. Use when the user wants to build a presentation, convert a PPT/PPTX to web, edit or restructure an existing deck, fix layout issues, replace images, insert/delete/reorder slides, or revise a first draft. Helps non-designers discover their aesthetic through visual exploration rather than abstract choices.
 ---
 
 # Frontend Slides
@@ -72,9 +72,21 @@ Determine what the user wants:
 - **Mode B: PPT Conversion** — Convert a .pptx file. Go to Phase 4.
 - **Mode C: Enhancement** — Improve an existing HTML presentation. Read it, understand it, enhance. **Follow Mode C modification rules below.**
 
-### Mode C: Modification Rules
+### Mode C: Enhancement
 
-When enhancing existing presentations, fixed-stage fitting is the biggest risk:
+When the user provides an existing HTML presentation or asks for
+revisions to one the skill previously created:
+
+**Before modifying an existing deck, read `references/iterative-editing.md`
+and follow its baseline inspection to understand the deck's structure.**
+
+If the change can alter rendered appearance, also read
+`references/visual-verification.md` and complete its validation loop
+before declaring the change finished.
+
+#### Modification rules
+
+Fixed-stage fitting is the biggest risk:
 
 1. **Before adding content:** Count existing elements, check against density limits
 2. **Adding images:** Fit them inside the 1920×1080 slide canvas. If slide already has max content, split into two slides
@@ -247,6 +259,21 @@ If the user selected a self-generated custom wildcard, treat that preview's CSS 
 
 ---
 
+### Post-draft transition
+
+When the user requests revisions after the draft exists (whether that
+draft was just generated or was provided from a previous session):
+
+1. Switch to **Mode C**.
+2. Read `references/iterative-editing.md` and perform baseline inspection.
+3. Read `references/visual-verification.md` and complete its validation loop.
+4. Prefer targeted modification over complete regeneration.
+
+Only regenerate the entire deck when targeted editing is unsafe,
+structurally impossible, or explicitly requested by the user.
+
+---
+
 ## Phase 4: PPT Conversion
 
 When converting PowerPoint files:
@@ -373,6 +400,8 @@ This captures each slide as a screenshot and combines them into a PDF. Perfect f
 | [bold-template-pack/templates/*/preview.md](bold-template-pack/templates/) | Lightweight style cards for shortlisted bold title previews | Phase 2 after shortlisting |
 | [bold-template-pack/templates/*/design.md](bold-template-pack/templates/) | Detailed design-system docs for the selected bold template only | Phase 3 after user selection |
 | [viewport-base.css](viewport-base.css)             | Mandatory fixed-stage CSS — copy into every presentation             | Phase 3 (generation)      |
+| [references/iterative-editing.md](references/iterative-editing.md) | Slide insertion, deletion, reordering, text & image editing, structural operations | Mode C (before modification) |
+| [references/visual-verification.md](references/visual-verification.md) | Screenshot-based visual verification loop, DOM checks, defect criteria | Mode C (after any appearance-changing edit) |
 | [html-template.md](html-template.md)               | HTML structure, JS features, code quality standards                  | Phase 3 (generation)      |
 | [animation-patterns.md](animation-patterns.md)     | CSS/JS animation snippets and effect-to-feeling guide                | Phase 3 (generation)      |
 | [scripts/extract-pptx.py](scripts/extract-pptx.py) | Python script for PPT content extraction                             | Phase 4 (conversion)      |

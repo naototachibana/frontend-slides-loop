@@ -16,7 +16,7 @@ New here? This beginner-friendly video walks you through the whole thing, start 
 
 **Frontend Slides** helps non-designers create beautiful web presentations without knowing CSS or JavaScript. It uses a "show, don't tell" approach: instead of asking you to describe your aesthetic preferences in words, it generates visual previews and lets you pick what you like.
 
-Once the first draft exists, **[iterative-slide-workflow.md](iterative-slide-workflow.md)** guides agents through structured refinement: slide insertion/deletion, visual verification via screenshots, image replacement, layout editing, and an iterative fix → verify → repeat loop.
+For revision and refinement of existing decks — slide insertion, deletion, reordering, text and image edits, layout changes, and visual defect correction — the skill's **Mode C** loads `references/iterative-editing.md` and `references/visual-verification.md` for a structured fix → verify → repeat workflow.
 
 Here is a deck about the skill, made through the skill:
 
@@ -61,6 +61,7 @@ mkdir -p ~/.claude/skills/frontend-slides/scripts
 
 # Copy the user-facing skill files
 cp SKILL.md STYLE_PRESETS.md viewport-base.css html-template.md animation-patterns.md ~/.claude/skills/frontend-slides/
+cp -R references ~/.claude/skills/frontend-slides/
 cp -R bold-template-pack ~/.claude/skills/frontend-slides/
 cp scripts/extract-pptx.py scripts/deploy.sh scripts/export-pdf.sh ~/.claude/skills/frontend-slides/scripts/
 ```
@@ -87,6 +88,7 @@ If the agent can read GitHub repos or browse files, it should start from `SKILL.
 - `viewport-base.css`
 - `html-template.md`
 - `animation-patterns.md`
+- `references/` — iterative-editing and visual-verification guides
 - `bold-template-pack/`
 - `scripts/`
 
