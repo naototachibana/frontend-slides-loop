@@ -2,6 +2,17 @@
 
 A companion reference for **Mode C** of `frontend-slides/SKILL.md`.
 
+## ⚠️  MANDATORY GATE
+
+**You MUST complete this visual verification loop before delivering any slide deck to the user.**
+
+Do NOT skip this step. Do NOT substitute `validate-packaging.py`, `curl`, or `git diff --check` for visual verification. These tools check structural integrity only — they cannot detect visual defects (clipping, overlap, bad typography, broken layout, counter mismatches, excessive whitespace).
+
+If browser automation tools (`playwright-cli`, `browser_navigate`, `browser_vision`, `vision_analyze`) are unavailable in your environment:
+1. Report the capability gap to the user
+2. Do NOT declare the deck visually verified
+3. Ask the user for guidance before proceeding
+
 Run this procedure after any change that can alter the rendered
 appearance of a Frontend Slides-compatible HTML deck.
 
@@ -341,7 +352,76 @@ Check every item that applies to the change:
 
 ---
 
-## 5. Bounded correction loop
+## 5. Visual inspection and correction loop
+
+You MUST iterate this loop until all visual defects are resolved:
+
+### Step 5.1: Render in browser
+
+Open the deck in a headless browser using available tools:
+
+```bash
+# Using playwright-cli (preferred):
+playwright-cli open "http://127.0.0.1:$PORT/index.html" --browser chromium
+
+# Or using Hermes built-in browser:
+# browser_navigate(url="http://127.0.0.1:$PORT/index.html")
+```
+
+### Step 5.2: Capture screenshots
+
+Take one screenshot per slide. Navigate through slides using arrow keys or `?slide=N` parameter.
+
+```bash
+# playwright-cli method:
+playwright-cli screenshot --filename=slide-01.png
+playwright-cli press ArrowRight
+playwright-cli screenshot --filename=slide-02.png
+# ... repeat for every slide
+
+# Or Hermes browser method:
+# browser_vision(question="Capture the full slide for visual inspection")
+```
+
+Save all screenshots to a known location (e.g., `/tmp/slides/`).
+
+### Step 5.3: Analyze with vision
+
+For EVERY screenshot, call `vision_analyze` with a standardized prompt:
+
+```
+vision_analyze(
+    image_url="/path/to/slide-NN.png",
+    question="Inspect this slide for visual defects:
+1. Is any text clipped or overflowing?
+2. Do any panels or cards overlap?
+3. Is the typography readable and well-spaced?
+4. Does the counter (lower-right) show the correct page number?
+5. Is the slide content well-balanced vertically (no excessive empty space)?
+6. Are all images rendering correctly?
+7. Does the design look consistent with the deck's style?
+Report all defects found."
+)
+```
+
+Record every defect found per slide.
+
+### Step 5.4: Repair defects
+
+For each defect reported:
+1. Identify the root cause (HTML structure, CSS rule, missing asset)
+2. Apply the most targeted fix
+3. Do NOT change unrelated slides
+
+### Step 5.5: Re-verify
+
+After each repair:
+1. Reload the browser page
+2. Re-capture the affected slide's screenshot
+3. Re-run `vision_analyze` on the new screenshot
+4. Confirm the defect is resolved and no new defects were introduced
+
+### Step 5.6: Repeat until zero defects
 
 ```
 round = 0
@@ -351,10 +431,10 @@ while defects_found and round < MAX_ITERATIONS:
     round += 1
     record current defects and screenshot
     apply the most targeted fix
-    return to step 1 (reload and wait for readiness)
-    re-run DOM checks
+    return to step 5.1 (reload)
+    re-run DOM checks (Section 2)
     capture new screenshot
-    inspect against checklist
+    inspect with vision (step 5.3)
 
 after loop:
     if no defects remain:
@@ -362,7 +442,7 @@ after loop:
     else:
         report REMAINING DEFECTS with the latest screenshot
         list each unresolved defect and what was tried
-        do not call a result accepted merely because the latest change
+        do NOT call the result accepted merely because the latest change
         differed visually from the previous iteration
 ```
 

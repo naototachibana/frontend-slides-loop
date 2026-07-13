@@ -266,7 +266,7 @@ draft was just generated or was provided from a previous session):
 
 1. Switch to **Mode C**.
 2. Read `references/iterative-editing.md` and perform baseline inspection.
-3. Read `references/visual-verification.md` and complete its validation loop.
+3. **MANDATORY:** Read and follow `references/visual-verification.md` completely — run the browser rendering, screenshot capture, vision analysis, and repair loop. Do NOT skip this step.
 4. Prefer targeted modification over complete regeneration.
 
 Only regenerate the entire deck when targeted editing is unsafe,
@@ -285,7 +285,23 @@ When converting PowerPoint files:
 
 ---
 
-## Phase 5: Delivery
+## Phase 5: Visual Verification & Delivery
+
+### 5A: Visual verification gate
+
+**Before delivering to the user, you MUST complete the `references/visual-verification.md` procedure.**
+
+This is non-negotiable. The procedure requires:
+1. Render the deck in a headless browser
+2. Capture a screenshot of every slide
+3. Analyze each screenshot with `vision_analyze`
+4. Repair all visual defects found
+5. Repeat the loop until zero defects remain
+
+If browser automation or vision analysis is unavailable in your environment,
+do NOT skip this step — report the capability gap to the user.
+
+### 5B: Delivery
 
 1. **Clean up** — Delete `.frontend-slides/slide-previews/` if it exists
 2. **Open** — Use `open [filename].html` to launch in browser
