@@ -157,11 +157,17 @@ async function waitForMotionFallback() {
       });
     }
   });
-  // Cap the wait at 5000 ms with a clear message
+  // FSL-137: bounded timeout — fail if computed duration exceeds cap
   const MAX_MOTION_WAIT = 5000;
-  const waitMs = Math.min(Math.max(maxMs, 200), MAX_MOTION_WAIT);
-  console.log(`Motion settle delay (fallback): ${waitMs} ms ` +
-    `(computed max ${maxMs} ms, capped at ${MAX_MOTION_WAIT} ms)`);
+  if (maxMs > MAX_MOTION_WAIT) {
+    throw new Error(
+      `Motion settle maxMs (${maxMs}) exceeds ` +
+      `MAX_MOTION_WAIT (${MAX_MOTION_WAIT}). ` +
+      `Cannot proceed: deck has animations longer than the permitted cap.`
+    );
+  }
+  const waitMs = Math.max(maxMs, 200);
+  console.log(`Motion settle delay (fallback): ${waitMs} ms`);
   await new Promise(r => setTimeout(r, waitMs));
 }
 
@@ -175,11 +181,13 @@ if (MOTION_CSS_INJECTION_UNAVAILABLE) {
 }
 
 // 4. Active slide found — fail if unresolved
-const activeSlide = document.querySelector('.slide.active') ||
-                    document.querySelector('.slide.visible');
+// Use the selector discovered during Phase 0 (FSL-138).
+// Do not hardcode — set during Phase 0 and fail closed if missing.
+const PHASE_0_ACTIVE_SLIDE_SELECTOR = '.slide.active'; // ← set during Phase 0
+const activeSlide = document.querySelector(PHASE_0_ACTIVE_SLIDE_SELECTOR);
 if (!activeSlide) {
   throw new Error(
-    'No active or visible slide found. ' +
+    `No active slide found using Phase 0 selector: ${PHASE_0_ACTIVE_SLIDE_SELECTOR}. ` +
     'Cannot proceed with visual verification.'
   );
 }
@@ -226,8 +234,7 @@ if (Math.abs(authoredW - expectedW) > 1 || Math.abs(authoredH - expectedH) > 1) 
 Run automated checks before screenshot inspection:
 
 ```javascript
-const slide = document.querySelector('.slide.active') ||
-              document.querySelector('.slide.visible');
+const slide = document.querySelector(PHASE_0_ACTIVE_SLIDE_SELECTOR);
 if (!slide) {
   report('no active slide to inspect');
 } else {

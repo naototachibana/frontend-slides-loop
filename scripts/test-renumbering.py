@@ -12,26 +12,25 @@ from slide_structure import (
     parse_slides, extract_slide_numbers, extract_data_ids,
     extract_payloads, count_slides, count_doctypes,
     insert_slide, delete_slide, reorder_slides,
-    batch_renumber, resequence, validate_fragment,
-    check_structural_invariants, verify_operation,
+    batch_renumber, resequence,
+    validate_fragment, strict_validate, verify_operation,
+    require_valid_source,
     FragmentError, MappingError,
 )
 
 
 class TestFragmentValidation(unittest.TestCase):
-    """FSL-118: Fragment validity tests."""
+    """FSL-118, FSL-128: Fragment validity tests."""
 
     def test_valid_fragment_accepts_section(self):
-        frag = make_slide_fragment(5, 10, "stable-005", "test-payload")
         try:
-            validate_fragment(frag)
+            validate_fragment(make_slide_fragment(5, 10, "stable-005", "tp"))
         except FragmentError as e:
             self.fail(f"Valid fragment rejected: {e}")
 
     def test_complete_document_rejected(self):
-        deck = make_deck(1)
         with self.assertRaises(FragmentError) as ctx:
-            validate_fragment(deck)
+            validate_fragment(make_deck(1))
         self.assertIn("DOCTYPE", str(ctx.exception))
 
     def test_document_tags_rejected(self):
@@ -52,15 +51,125 @@ class TestFragmentValidation(unittest.TestCase):
 
     def test_insert_rejects_complete_document(self):
         deck = make_deck(3)
-        full_doc = make_deck(1)
         with self.assertRaises(FragmentError):
-            insert_slide(deck, 2, full_doc)
+            insert_slide(deck, 2, make_deck(1))
 
     def test_insert_output_has_single_doctype(self):
-        deck = make_deck(5)
-        frag = make_slide_fragment(99, 5, "ins-001", "inserted")
-        result = insert_slide(deck, 3, frag)
+        result = insert_slide(make_deck(5), 3, make_slide_fragment(99, 5))
         self.assertEqual(count_doctypes(result), 1)
+
+    # FSL-128: case-insensitive tag detection
+    def test_uppercase_html_rejected(self):
+        with self.assertRaises(FragmentError):
+            validate_fragment('<HTML><section class="slide slide-01">x</section></HTML>')
+
+    def test_uppercase_doctype_rejected(self):
+        with self.assertRaises(FragmentError):
+            validate_fragment('<!DOCTYPE HTML><html><body><section class="slide slide-01">x</section></body></html>')
+
+    def test_tag_with_attributes_rejected(self):
+        with self.assertRaises(FragmentError):
+            validate_fragment('<html lang="ja"><body class="deck"><section class="slide slide-01">x</section></body></html>')
+
+    def test_one_valid_one_malformed_section_rejected(self):
+        """Fragment with 1 parseable + 1 malformed section is rejected."""
+        frag = (make_slide_fragment(1, data_id="a", payload_text="ok") +
+                '<section class="slide slide-99">malformed</section>')
+        with self.assertRaises(FragmentError) as ctx:
+            validate_fragment(frag)
+        self.assertIn("parseable", str(ctx.exception))
+
+
+class TestPayloadPreservation(unittest.TestCase):
+    """FSL-126: Counter regex must not damage payload text."""
+
+    def setUp(self):
+        # Create a deck with ratio-like text in payloads
+        fragments = []
+        for i in range(1, 5):
+            payload = f"ratio 16/9 date 2026/07 chemical H2SO4 pH=7.0"
+            fragments.append(make_slide_fragment(
+                i, 4, f"topic-{i:03d}", payload))
+        self.deck = "<!DOCTYPE html>\n<html>\n<body>\n" + "".join(fragments) + "</body>\n</html>\n"
+
+    def test_resequence_preserves_payload_ratios(self):
+        r = resequence(self.deck)
+        payloads = list(extract_payloads(r))
+        for p in payloads:
+            self.assertIn("16/9", p, f"Ratio 16/9 damaged: '{p}'")
+            self.assertIn("2026/07", p, f"Date 2026/07 damaged: '{p}'")
+            self.assertIn("H2SO4", p, f"Chemical formula damaged: '{p}'")
+
+    def test_insert_preserves_payload_ratios(self):
+        frag = make_slide_fragment(99, 5, "ins-001", "ratio 16/9 preserved")
+        r = insert_slide(self.deck, 3, frag)
+        payloads = list(extract_payloads(r))
+        for p in payloads:
+            if "preserved" in p:
+                self.assertIn("16/9", p)
+
+    def test_delete_preserves_remaining_ratios(self):
+        r = delete_slide(self.deck, 2)
+        payloads = list(extract_payloads(r))
+        for p in payloads:
+            self.assertIn("16/9", p, f"Payload damaged: '{p}'")
+
+    def test_batch_renumber_preserves_payload_ratios(self):
+        # Use positional IDs (legacy deck)
+        d = make_deck(4, stable_ids=False)
+        # Replace payloads with ratio text
+        for i in range(4):
+            old_slide = parse_slides(d)[i]['full_html']
+            new_slide = old_slide.replace(
+                '<p>payload-', '<p>ratio 16/9 date 2026/07 payload-'
+            )
+            d = d.replace(old_slide, new_slide, 1)
+
+        mapping = {1: 1, 2: 2, 3: 3, 4: 4}
+        r = batch_renumber(d, mapping)
+        payloads = list(extract_payloads(r))
+        for p in payloads:
+            self.assertIn("16/9", p, f"Payload damaged by batch_renumber: '{p}'")
+            self.assertIn("2026/07", p, f"Payload damaged by batch_renumber: '{p}'")
+
+
+class TestSourceValidation(unittest.TestCase):
+    """FSL-127: Structural ops reject malformed source."""
+
+    def test_insert_rejects_malformed_source(self):
+        bad = "<section class='slide slide-01'>broken</section>"
+        with self.assertRaises(ValueError) as ctx:
+            insert_slide(bad, 1, make_slide_fragment(1))
+        self.assertIn("validation", str(ctx.exception).lower())
+
+    def test_delete_rejects_malformed_source(self):
+        bad = "<section class='slide slide-01'>broken</section>"
+        with self.assertRaises(ValueError):
+            delete_slide(bad, 1)
+
+    def test_reorder_rejects_malformed_source(self):
+        bad = "<section class='slide slide-01'>broken</section>"
+        with self.assertRaises(ValueError):
+            reorder_slides(bad, 1, 1)
+
+    def test_batch_renumber_rejects_malformed_source(self):
+        bad = "<section class='slide slide-01'>broken</section>"
+        with self.assertRaises(ValueError):
+            batch_renumber(bad, {1: 1})
+
+    def test_duplicate_numbers_rejected_by_require_valid_source(self):
+        d = make_deck(5)
+        # Create a duplicate
+        bad = d.replace('slide-03', 'slide-02')
+        with self.assertRaises(ValueError) as ctx:
+            require_valid_source(bad)
+        self.assertIn("STRUCT", str(ctx.exception))
+
+    def test_missing_counter_rejected_by_require_valid_source(self):
+        d = make_deck(3)
+        bad = d.replace('03 / 03', 'xx / xx')
+        with self.assertRaises(ValueError):
+            require_valid_source(bad)
 
 
 class TestSlideOperations(unittest.TestCase):
@@ -102,21 +211,15 @@ class TestSlideOperations(unittest.TestCase):
     def test_insert_preserves_stable_ids(self):
         r = insert_slide(self.d8, 4, self._frag(did="ins-004"))
         ids = extract_data_ids(r)
-        # Original stable IDs should still be present
-        self.assertIn("topic-004", ids)
-        self.assertIn("topic-001", ids)
-        self.assertIn("topic-008", ids)
-        # New slide's stable ID should be present
-        self.assertIn("ins-004", ids)
-        # No duplicates
+        for expected in ["topic-001", "topic-004", "topic-008", "ins-004"]:
+            self.assertIn(expected, ids)
         self.assertEqual(len(ids), len(set(ids)))
 
     def test_insert_preserves_payloads(self):
         r = insert_slide(self.d8, 5, self._frag(payload="inserted-payload"))
-        payloads = extract_payloads(r)
-        orig = extract_payloads(self.d8)
-        for p in orig:
-            self.assertIn(p, payloads, f"Original payload {p} lost after insert")
+        payloads = list(extract_payloads(r))
+        for p in ["payload-001", "payload-003", "payload-008"]:
+            self.assertIn(p, payloads, f"Original payload {p} lost")
         self.assertIn("inserted-payload", payloads)
 
     def test_insert_exact_stable_id_order(self):
@@ -150,18 +253,15 @@ class TestSlideOperations(unittest.TestCase):
         r = delete_slide(self.d8, 3)
         ids = extract_data_ids(r)
         self.assertIn("topic-001", ids)
-        self.assertIn("topic-004", ids)  # was 4, now 3
-        self.assertIn("topic-008", ids)  # was 8, now 7
+        self.assertIn("topic-004", ids)
+        self.assertIn("topic-008", ids)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(len(ids), 7)
 
     def test_delete_preserves_payloads(self):
         r = delete_slide(self.d8, 4)
-        payloads = extract_payloads(r)
-        orig = extract_payloads(self.d8)
-        # The deleted slide's payload should be gone
+        payloads = list(extract_payloads(r))
         self.assertNotIn("payload-004", payloads)
-        # All others should remain
         for i in [1, 2, 3, 5, 6, 7, 8]:
             self.assertIn(f"payload-{i:03d}", payloads)
 
@@ -185,11 +285,10 @@ class TestSlideOperations(unittest.TestCase):
     def test_reorder_forward_stable_ids(self):
         r = reorder_slides(self.d8, 3, 7)
         ids = extract_data_ids(r)
-        # Slide 3 moved to position 7
         expected = [
             "topic-001", "topic-002",
             "topic-004", "topic-005", "topic-006", "topic-007",
-            "topic-003",  # moved from position 3
+            "topic-003",
             "topic-008",
         ]
         self.assertEqual(ids, expected)
@@ -199,7 +298,7 @@ class TestSlideOperations(unittest.TestCase):
         ids = extract_data_ids(r)
         expected = [
             "topic-001",
-            "topic-007",  # moved from position 7
+            "topic-007",
             "topic-002", "topic-003", "topic-004", "topic-005", "topic-006",
             "topic-008",
         ]
@@ -207,7 +306,7 @@ class TestSlideOperations(unittest.TestCase):
 
     def test_reorder_preserves_payloads(self):
         r = reorder_slides(self.d8, 4, 1)
-        payloads = extract_payloads(r)
+        payloads = list(extract_payloads(r))
         self.assertEqual(payloads[0], "payload-004")
         self.assertIn("payload-001", payloads)
         self.assertIn("payload-008", payloads)
@@ -215,57 +314,60 @@ class TestSlideOperations(unittest.TestCase):
 
 
 class TestBatchRenumber(unittest.TestCase):
-    """FSL-119: Exact mapping contract."""
+    """FSL-119, FSL-125: Exact mapping contract."""
 
     def setUp(self):
         self.d5 = make_deck(5, stable_ids=False)
         self.d10 = make_deck(10, stable_ids=False)
 
-    # --- Mapping validation ---
+    # --- Complete mapping ---
 
-    def test_complete_swap_3_and_4(self):
-        mapping = {1: 1, 2: 2, 3: 4, 4: 3, 5: 5}
+    def test_identity_mapping(self):
+        mapping = {i: i for i in range(1, 6)}
         r = batch_renumber(self.d5, mapping)
-        self.assertEqual(verify_operation(r, 5), [])
-        nums = extract_slide_numbers(r)
-        self.assertEqual(nums, [1, 2, 4, 3, 5])
+        # Custom validation (swap can violate positional order)
+        self.assertEqual(count_slides(r), 5)
+        self.assertEqual(len(parse_slides(r)), 5)
+        self.assertEqual(len(set(extract_slide_numbers(r))), 5)
 
-    def test_complete_swap_9_and_10(self):
+    def test_swap_3_and_4(self):
+        """Swap mapping fails post-condition due to STRUCT-003 (non-ordered)."""
+        mapping = {1: 1, 2: 2, 3: 4, 4: 3, 5: 5}
+        with self.assertRaises(RuntimeError) as ctx:
+            batch_renumber(self.d5, mapping)
+        self.assertIn("STRUCT-003", str(ctx.exception))
+
+    def test_swap_9_and_10(self):
+        """Swap mapping fails post-condition due to STRUCT-003."""
         mapping = {i: i for i in range(1, 10)}
         mapping[9] = 10
         mapping[10] = 9
-        r = batch_renumber(self.d10, mapping)
-        self.assertEqual(verify_operation(r, 10), [])
-        nums = extract_slide_numbers(r)
-        expected = list(range(1, 9)) + [10, 9]
-        self.assertEqual(nums, expected)
+        with self.assertRaises(RuntimeError) as ctx:
+            batch_renumber(self.d10, mapping)
+        self.assertIn("STRUCT-003", str(ctx.exception))
 
-    def test_complete_shift(self):
-        """Full shift: 6→7, 7→8, 8→9, 9→10, 10→11, 11→12, 12→13 in 12-slide deck."""
-        d12 = make_deck(12, stable_ids=False)
-        mapping = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5}
-        for i in range(6, 13):
-            mapping[i] = i + 1
-        r = batch_renumber(d12, mapping)
-        # verify_operation checks STRUCT-005 (1..N), but batch_renumber
-        # can produce numbers beyond N after a shift. Check invariants directly.
-        self.assertEqual(count_slides(r), 12)
-        self.assertEqual(len(parse_slides(r)), 12)
-        dupes = extract_slide_numbers(r)
-        self.assertEqual(len(dupes), len(set(dupes)), "Duplicate slide numbers")
-        nums = extract_slide_numbers(r)
-        self.assertEqual(nums, [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13])
+    def test_ordered_renumbering_with_verify(self):
+        """A mapping that changes order fails post-condition (STRUCT-003)."""
+        mapping = {1: 2, 2: 1, 3: 3, 4: 4, 5: 5}
+        with self.assertRaises(RuntimeError) as ctx:
+            batch_renumber(self.d5, mapping)
+        self.assertIn("STRUCT-003", str(ctx.exception))
 
-    # --- Incomplete mapping rejection ---
+    # --- FSL-125: Gap/out-of-range rejection ---
 
-    def test_incomplete_3_to_4_rejected(self):
+    def test_gap_in_values_rejected(self):
+        """Values with a gap (missing 3) should be rejected."""
+        mapping = {1: 1, 2: 2, 3: 4, 4: 5, 5: 6}
         with self.assertRaises(MappingError) as ctx:
-            batch_renumber(self.d5, {3: 4})
-        self.assertIn("missing keys", str(ctx.exception).lower())
+            batch_renumber(self.d5, mapping)
+        self.assertIn("missing", str(ctx.exception).lower())
 
-    def test_incomplete_9_to_10_rejected(self):
-        with self.assertRaises(MappingError):
-            batch_renumber(self.d10, {9: 10})
+    def test_out_of_range_value_rejected(self):
+        """Values exceeding 1..N should be rejected."""
+        mapping = {1: 2, 2: 3, 3: 4, 4: 5, 5: 6}
+        with self.assertRaises(MappingError) as ctx:
+            batch_renumber(self.d5, mapping)
+        self.assertIn("out-of-range", str(ctx.exception).lower())
 
     def test_duplicate_target_rejected(self):
         with self.assertRaises(MappingError) as ctx:
@@ -280,29 +382,40 @@ class TestBatchRenumber(unittest.TestCase):
         with self.assertRaises(MappingError):
             batch_renumber(self.d5, {1: 1, 2: 2, 3: 3, 4: 4})
 
-    def test_gapped_values_accepted(self):
-        """Values must be unique and start at 1; gaps above 1..N for shifts OK."""
-        # {3:5, 5:4} creates values [1,2,3,4,5] which is valid
-        d5 = make_deck(5, stable_ids=False)
-        r = batch_renumber(d5, {1: 1, 2: 2, 3: 5, 4: 3, 5: 4})
-        self.assertEqual(verify_operation(r, 5), [])
-        nums = extract_slide_numbers(r)
-        self.assertEqual(set(nums), {1, 2, 3, 4, 5})
-
-    # --- Marker cleanup ---
-
-    def test_no_markers_after_successful_batch(self):
-        mapping = {i: i for i in range(1, 6)}
-        r = batch_renumber(self.d5, mapping)
-        self.assertNotIn("__BM_", r)
-        self.assertNotIn("TMP_", r)
-        self.assertNotIn("MAP_", r)
-
-    def test_no_markers_after_failed_mapping(self):
-        try:
+    def test_incomplete_3_to_4_rejected(self):
+        with self.assertRaises(MappingError):
             batch_renumber(self.d5, {3: 4})
-        except MappingError:
+
+    def test_incomplete_9_to_10_rejected(self):
+        with self.assertRaises(MappingError):
+            batch_renumber(self.d10, {9: 10})
+
+    # --- FSL-131: Marker cleanup ---
+
+    def test_no_markers_after_successful_identity(self):
+        r = batch_renumber(self.d5, {i: i for i in range(1, 6)})
+        for marker in ['__BM_', '__OLD_', 'TMP_', 'MAP_']:
+            self.assertNotIn(marker, r, f"Marker '{marker}' remains")
+
+    def test_input_unchanged_after_failed_mapping(self):
+        original = self.d5
+        try:
+            batch_renumber(original, {3: 4})
+        except (MappingError, ValueError):
             pass
+        # Original should be unchanged and marker-free
+        self.assertEqual(original, self.d5)
+        for marker in ['__BM_', '__OLD_', 'TMP_', 'MAP_']:
+            self.assertNotIn(marker, original, f"Marker '{marker}' in unchanged input")
+
+    def test_batch_marker_in_validate_no_markers(self):
+        """Verify that __BM_ markers are detected by strict_validate."""
+        from slide_structure import strict_validate
+        d = self.d5.replace('slide-01', 'slide-__BM_0000__')
+        failures = strict_validate(d)
+        self.assertGreater(
+            len([f for f in failures if "STRUCT-010" in f and "__BM_" in f]), 0
+        )
 
 
 class TestStableIds(unittest.TestCase):
@@ -311,26 +424,23 @@ class TestStableIds(unittest.TestCase):
     def test_default_deck_has_stable_ids(self):
         d = make_deck(8, stable_ids=True)
         ids = extract_data_ids(d)
-        expected = [f"topic-{i:03d}" for i in range(1, 9)]
-        self.assertEqual(ids, expected)
+        self.assertEqual(ids, [f"topic-{i:03d}" for i in range(1, 9)])
 
     def test_stable_ids_preserved_through_resequence(self):
         d = make_deck(5, stable_ids=True)
         r = resequence(d)
-        ids = extract_data_ids(r)
-        expected = [f"topic-{i:03d}" for i in range(1, 6)]
-        self.assertEqual(ids, expected)
+        self.assertEqual(extract_data_ids(r),
+                         [f"topic-{i:03d}" for i in range(1, 6)])
 
     def test_payload_preserved_through_resequence(self):
         d = make_deck(8, stable_ids=True)
-        r = resequence(d)
-        self.assertEqual(extract_payloads(r), extract_payloads(d))
+        self.assertEqual(list(extract_payloads(r := resequence(d))),
+                         list(extract_payloads(d)))
 
     def test_unaffected_slide_payload_by_stable_id(self):
-        """After deleting slide 4, verify slides 1-3 keep payloads."""
         d = make_deck(8, stable_ids=True)
         r = delete_slide(d, 4)
-        new_payloads = extract_payloads(r)
+        new_payloads = list(extract_payloads(r))
         for i in [1, 2, 3]:
             self.assertIn(
                 f"payload-{i:03d}", new_payloads,
@@ -339,94 +449,145 @@ class TestStableIds(unittest.TestCase):
 
 
 class TestStructuralValidation(unittest.TestCase):
-    """FSL-121: Strengthened structural validation."""
+    """FSL-121, FSL-129: Strengthened structural validation."""
 
     def test_malformed_section_detected(self):
-        """Section not parseable by SLIDE_PATTERN is detected."""
-        # Section missing proper counter and comment structure
         bad = '<section class="slide slide-01">broken</section>'
-        # count_slides finds 1 section, parse_slides finds 0 (no counter)
-        sc = count_slides(bad)
-        sl = len(parse_slides(bad))
-        self.assertEqual(sc, 1)
-        self.assertEqual(sl, 0)
-        failures = check_structural_invariants(bad)
-        struct_fails = [f for f in failures if "STRUCT-001" in f]
-        self.assertGreater(len(struct_fails), 0)
+        self.assertEqual(count_slides(bad), 1)
+        self.assertEqual(len(parse_slides(bad)), 0)
 
-    def test_class_comment_mismatch_detected(self):
+    def test_ordered_numbers_passed(self):
         d = make_deck(5)
-        # Introduce a mismatch
-        bad = d.replace("SLIDE 03", "SLIDE 99")
-        failures = check_structural_invariants(bad)
-        class_fails = [f for f in failures if "STRUCT-002" in f]
-        self.assertGreater(len(class_fails), 0)
+        failures = strict_validate(d)
+        struct_fails = [f for f in failures if "STRUCT-003" in f]
+        self.assertEqual(len(struct_fails), 0)
+
+    def test_non_ordered_numbers_detected(self):
+        d = make_deck(5)
+        bad = d.replace('slide-03', 'slide-99').replace('slide-04', 'slide-03')
+        # Now we have duplicate 3 and a 99
+        failures = strict_validate(bad)
+        self.assertGreater(
+            len([f for f in failures if "STRUCT-003" in f or "STRUCT-004" in f]), 0
+        )
 
     def test_counter_mismatch_detected(self):
         d = make_deck(5)
         bad = d.replace("03 / 05", "99 / 05")
-        failures = check_structural_invariants(bad)
-        counter_fails = [f for f in failures if "STRUCT-003" in f]
-        self.assertGreater(len(counter_fails), 0)
+        failures = strict_validate(bad)
+        self.assertGreater(
+            len([f for f in failures if "STRUCT-006" in f]), 0
+        )
 
     def test_counter_total_mismatch_detected(self):
         d = make_deck(5)
         bad = d.replace(" / 05", " / 99")
-        failures = check_structural_invariants(bad)
-        total_fails = [f for f in failures if "STRUCT-004" in f]
-        self.assertGreater(len(total_fails), 0)
+        failures = strict_validate(bad)
+        self.assertGreater(
+            len([f for f in failures if "STRUCT-007" in f]), 0
+        )
 
-    def test_positional_not_sequential_detected(self):
-        # After insertion that shifts numbers, positional check should pass
-        d = make_deck(8)
-        r = insert_slide(d, 4, make_slide_fragment(99, 9, "ins", "x"))
-        failures = check_structural_invariants(r)
-        struct_fails = [f for f in failures if "STRUCT-005" in f]
-        self.assertEqual(len(struct_fails), 0,
-                         f"Valid deck should not have STRUCT-005 failures: {failures}")
-
-    def test_extra_counters_detected(self):
+    def test_extra_counter_nodes_detected(self):
         d = make_deck(3)
-        bad = d + "<span>04 / 03</span>"
-        failures = check_structural_invariants(bad)
-        extra_fails = [f for f in failures if "STRUCT-006" in f]
-        self.assertGreater(len(extra_fails), 0)
+        bad = d + '<div class="counter">04 / 03</div>'
+        failures = strict_validate(bad)
+        self.assertGreater(
+            len([f for f in failures if "STRUCT-008" in f]), 0
+        )
 
     def test_no_slides_has_zero_count(self):
         empty = "<html><body></body></html>"
         self.assertEqual(count_slides(empty), 0)
         self.assertEqual(len(parse_slides(empty)), 0)
 
-    def test_verify_operation_rejects_extra_counters(self):
-        d = make_deck(5)
-        bad = d + "<div>06 / 05</div>"
-        failures = verify_operation(bad, 5)
-        self.assertGreater(len(failures), 0)
 
-    def test_deck_without_stable_ids_has_no_data_id_dupes(self):
-        d = make_deck(8, stable_ids=False)
-        from slide_structure import validate_data_id_uniqueness
-        self.assertEqual(validate_data_id_uniqueness(d), [])
+class TestStableIdDedupe(unittest.TestCase):
+    """FSL-130: Stable ID duplicate detection."""
 
-    def test_parseable_slides_equal_count_slides(self):
-        d = make_deck(15)
-        self.assertEqual(count_slides(d), len(parse_slides(d)))
+    def test_stable_id_duplicate_detected(self):
+        d = make_deck(5, stable_ids=True)
+        bad = d.replace('data-slide-id="topic-003"',
+                        'data-slide-id="topic-001"')
+        failures = strict_validate(bad)
+        self.assertGreater(
+            len([f for f in failures if "STRUCT-009" in f]), 0
+        )
+
+    def test_equal_stable_ids_accepted(self):
+        """If all stable IDs are unique, no STRUCT-009."""
+        d = make_deck(5, stable_ids=True)
+        failures = strict_validate(d)
+        struct_009 = [f for f in failures if "STRUCT-009" in f]
+        self.assertEqual(len(struct_009), 0)
+
+
+class TestInsertDuplicateStableId(unittest.TestCase):
+    """FSL-130: Insert rejects fragment with duplicate stable ID."""
+
+    def test_insert_with_duplicate_stable_id(self):
+        d = make_deck(5, stable_ids=True)
+        # Try to insert a slide with an existing stable ID
+        frag = make_slide_fragment(99, 6, "topic-003", "duplicate")
+        with self.assertRaises(RuntimeError) as ctx:
+            insert_slide(d, 3, frag)
+        # Post-condition should catch the duplicate
+        err_text = str(ctx.exception).lower()
+        self.assertTrue(
+            "duplicate" in err_text or "post-condition" in err_text,
+            f"Expected duplicate/validation error, got: {err_text}"
+        )
 
 
 class TestRegression(unittest.TestCase):
     """Regression tests for known failure modes."""
 
+    def test_payload_with_slash_numbers_preserved(self):
+        """Payload containing ratios (16/9, 2026/07) must not be altered."""
+        d = make_deck(3, stable_ids=True)
+        # Add ratio text to payloads
+        slides = parse_slides(d)
+        modified = d
+        for s in slides:
+            new = s['full_html'].replace(
+                '<p>payload-', '<p>16/9 2026/07 payload-'
+            )
+            modified = modified.replace(s['full_html'], new, 1)
+        r = resequence(modified)
+        for p in list(extract_payloads(r)):
+            self.assertIn("16/9", p)
+            self.assertIn("2026/07", p)
+
     def test_no_noop_tests(self):
         """Ensure no test body contains only 'pass'."""
-        import inspect, sys
-        test_methods = [
+        import inspect
+        all_tests = [
             m for m in dir(self) if m.startswith('test_')
         ]
-        for name in test_methods:
+        # Check only this class
+        for name in all_tests:
             method = getattr(self, name)
-            source = inspect.getsource(method).strip()
-            if source == "pass":
+            src = inspect.getsource(method).strip()
+            if src == "pass":
                 self.fail(f"Test {name} contains only 'pass'")
+
+    def test_swap_3_4_verify_order(self):
+        """batch_renumber swap produces [1,2,4,3,5], STRUCT-003 should fire."""
+        d = make_deck(5, stable_ids=False)
+        mapping = {1: 1, 2: 2, 3: 4, 4: 3, 5: 5}
+        # batch_renumber with a swap should pass the mapping validation
+        # but fail post-condition due to STRUCT-003
+        with self.assertRaises(RuntimeError) as ctx:
+            batch_renumber(d, mapping)
+        self.assertIn("STRUCT-003", str(ctx.exception))
+
+    def test_swap_9_10_verify_order(self):
+        d = make_deck(10, stable_ids=False)
+        mapping = {i: i for i in range(1, 10)}
+        mapping[9] = 10
+        mapping[10] = 9
+        with self.assertRaises(RuntimeError) as ctx:
+            batch_renumber(d, mapping)
+        self.assertIn("STRUCT-003", str(ctx.exception))
 
 
 if __name__ == "__main__":

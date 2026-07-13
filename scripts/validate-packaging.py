@@ -370,12 +370,25 @@ if os.path.exists(README_MD):
     else:
         print("  OK: No leading-pipe marketplace commands")
 
-    # Also verify the exact expected command exists
+    # Also verify the exact expected command exists in a text code block
     valid_cmd = "/plugin marketplace add https://github.com/naototachibana/frontend-slides-loop"
-    if valid_cmd in readme:
+    # Find the command inside a fenced text block
+    found_in_text_block = False
+    in_text_block = False
+    for line in readme.split("\n"):
+        if line.strip().startswith("```text"):
+            in_text_block = True
+            continue
+        elif line.strip().startswith("```") and in_text_block:
+            in_text_block = False
+            continue
+        if in_text_block and line.strip() == valid_cmd:
+            found_in_text_block = True
+            break
+    if found_in_text_block:
         print(f"  OK: Valid marketplace command found")
     else:
-        err("PKG-STALE-WORKFLOW: README missing valid marketplace install command")
+        err("PKG-MARKETPLACE-CMD: README missing or misformatted marketplace install command")
 
 # ---------------------------------------------------------------------------
 # 12. No pkill -f in references
@@ -491,6 +504,7 @@ if os.path.exists(test_path):
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
+        timeout=30,
     )
     # Print stdout (test output)
     for line in result.stdout.split("\\n"):

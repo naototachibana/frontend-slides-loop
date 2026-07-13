@@ -21,7 +21,7 @@ def make_slide_fragment(num: int, total: int = 0,
     Args:
         num: Slide number for class and counter.
         total: Total slides for counter denominator (default: num).
-        data_id: Stable non-positional data-slide-id (default: None).
+        data_id: Stable non-positional ID (default: None).
         payload_text: Unique content inside the slide (default: None).
     """
     if total <= 0:
@@ -38,20 +38,22 @@ def make_slide_fragment(num: int, total: int = 0,
     )
 
 
-def make_deck(num_slides: int, stable_ids: bool = True) -> str:
+def make_deck(num_slides: int, stable_ids: bool = True,
+              payload_content: str = None) -> str:
     """Create a synthetic Frontend Slides deck.
 
-    When stable_ids=True, data-slide-id values use non-positional
-    identifiers (topic-001, topic-002, ...) that must be preserved
-    through structural operations.
+    When stable_ids=True, data-slide-id uses non-positional IDs
+    (topic-001, ...) that MUST be preserved through operations.
 
-    When stable_ids=False, data-slide-id uses positional values
-    (slide-01, slide-02, ...) matching a legacy numbered deck.
+    When stable_ids=False, data-slide-id uses positional IDs (slide-01...).
+
+    payload_content: optional extra text to embed in each slide's
+    <p> element for payload-preservation testing.
     """
     slides = []
     for i in range(1, num_slides + 1):
         did = f"topic-{i:03d}" if stable_ids else f"slide-{i:02d}"
-        payload = f"payload-{i:03d}"
+        payload = payload_content or f"payload-{i:03d}"
         slides.append(make_slide_fragment(i, num_slides, did, payload))
     return "<!DOCTYPE html>\n<html>\n<body>\n" + "".join(slides) + "</body>\n</html>\n"
 
@@ -71,6 +73,10 @@ SLIDE_PATTERN = re.compile(
 
 SECTION_PATTERN = re.compile(
     r'<section[^>]*class="[^"]*slide-\d+[^"]*"[^>]*>',
+)
+
+COUNTER_PATTERN = re.compile(
+    r'<div\s+class="counter">(\d+)\s*/\s*(\d+)</div>',
 )
 
 
@@ -118,25 +124,60 @@ def extract_data_ids(deck_html: str) -> List[str]:
 
 
 def extract_payloads(deck_html: str) -> List[str]:
-    """Extract ordered payload text from slide <p> elements."""
-    payloads = []
     for s in parse_slides(deck_html):
         if s['payload']:
-            payloads.append(s['payload'])
-    return payloads
+            yield s['payload']
 
 
 def count_slides(deck_html: str) -> int:
     return len(SECTION_PATTERN.findall(deck_html))
 
 
-def get_counters(deck_html: str) -> List[Tuple[int, int]]:
-    pairs = re.findall(r'(\d+)\s*/\s*(\d+)', deck_html)
-    return [(int(c), int(t)) for c, t in pairs]
-
-
 def count_doctypes(deck_html: str) -> int:
-    return deck_html.count('<!DOCTYPE html>')
+    return len(re.findall(r'<!DOCTYPE\s+html>', deck_html, re.IGNORECASE))
+
+
+# ---------------------------------------------------------------------------
+# Per-slide replacement helper (FSL-126: never rewrite payload text)
+# ---------------------------------------------------------------------------
+
+def _replace_slide_in_deck(deck_html: str, old_slide_html: str,
+                           new_slide_html: str) -> str:
+    """Replace one slide's HTML in the deck document.
+
+    Uses str.replace(..., 1) on the known old_slide_html substring.
+    This is safe because old_slide_html comes from parse_slides() which
+    extracts the exact substring via SLIDE_PATTERN.finditer.
+    """
+    return deck_html.replace(old_slide_html, new_slide_html, 1)
+
+
+def _build_updated_slide(
+    slide: Dict,
+    new_num: int,
+    total: int,
+    new_data_id: str = None,
+) -> str:
+    """Build a replacement <section> for a parsed slide with updated
+    positional metadata. Preserves non-positional data-slide-id and
+    payload text exactly.
+
+    Positional updates:
+      - class: slide-NN
+      - HTML comment: SLIDE NN
+      - counter: NN / TT
+      - positional data-slide-id (slide-NN format)
+
+    Non-positional data-slide-id (topic-NNN, etc.) is preserved
+    via the new_data_id parameter. If new_data_id is None, the
+    original data_id is kept (for stable IDs).
+    """
+    if new_data_id is None:
+        new_data_id = slide['data_id']
+    payload_text = slide['payload'] if slide['payload'] else None
+    return make_slide_fragment(
+        new_num, total, new_data_id, payload_text
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -147,164 +188,204 @@ class FragmentError(ValueError):
     """Raised when a slide fragment is invalid for insertion."""
 
 
+# Document-level tags to detect (case-insensitive)
+DOCUMENT_TAGS = [
+    '<!DOCTYPE', '<html', '</html>', '<head', '</head>',
+    '<body', '</body>',
+]
+
+
 def validate_fragment(fragment: str) -> None:
     """Validate a slide fragment for use with insert_slide().
 
     Raises FragmentError if:
     - fragment is empty
-    - fragment contains a complete HTML document (DOCTYPE, html, head, body)
-    - fragment has zero slide sections
-    - fragment has more than one slide section
-    - fragment is not parseable by the fixture parser
+    - fragment contains document-level tags (case-insensitive, attribute-aware)
+    - fragment has zero or more than one parseable slide sections
+    - fragment has any <section> that is not parseable by the fixture parser
     """
     if not fragment or not fragment.strip():
         raise FragmentError("Fragment is empty")
 
-    if '<!DOCTYPE html>' in fragment:
-        raise FragmentError("Fragment is a complete HTML document (contains DOCTYPE)")
-
-    for tag in ['<html>', '</html>', '<head>', '</head>', '<body>', '</body>']:
-        if tag in fragment:
+    # Case-insensitive document tag detection (FSL-128)
+    fragment_lower = fragment.lower()
+    for tag in DOCUMENT_TAGS:
+        if tag.lower() in fragment_lower:
             raise FragmentError(
                 f"Fragment contains document-level tag {tag}; "
                 f"use make_slide_fragment() to create a valid section fragment"
             )
 
-    slides = parse_slides(fragment)
-    if len(slides) == 0:
+    # Count all <section> elements and parseable slides
+    all_sections = re.findall(r'<section\s', fragment, re.IGNORECASE)
+    parseable = parse_slides(fragment)
+
+    if len(all_sections) == 0:
+        raise FragmentError(
+            "Fragment contains no <section> elements"
+        )
+
+    if len(all_sections) != len(parseable):
+        raise FragmentError(
+            f"Fragment has {len(all_sections)} <section> element(s) but "
+            f"only {len(parseable)} are parseable by the fixture parser. "
+            f"All sections must match the fixture grammar."
+        )
+
+    if len(parseable) == 0:
         raise FragmentError(
             "Fragment contains no parseable slide sections"
         )
-    if len(slides) > 1:
+
+    if len(parseable) > 1:
         raise FragmentError(
-            f"Fragment contains {len(slides)} slide sections; "
+            f"Fragment contains {len(parseable)} slide sections; "
             f"insert_slide accepts exactly one"
         )
 
 
 # ---------------------------------------------------------------------------
-# Validation
+# Structural validation (FSL-121, FSL-127, FSL-129)
 # ---------------------------------------------------------------------------
 
-def validate_uniqueness(deck_html: str) -> List[int]:
-    nums = extract_slide_numbers(deck_html)
-    seen: Set[int] = set()
-    dupes: Set[int] = set()
-    for n in nums:
-        if n in seen:
-            dupes.add(n)
-        seen.add(n)
-    return sorted(dupes)
+def strict_validate(deck_html: str) -> List[str]:
+    """Comprehensive structural validation. Returns list of failures.
 
-
-def validate_data_id_uniqueness(deck_html: str) -> List[str]:
-    ids = extract_data_ids(deck_html)
-    seen: Set[str] = set()
-    dupes: Set[str] = set()
-    for i in ids:
-        if i in seen:
-            dupes.add(i)
-        seen.add(i)
-    return sorted(dupes)
-
-
-def validate_no_markers(deck_html: str) -> bool:
-    return "__OLD_" not in deck_html and "TMP_" not in deck_html and "MAP_" not in deck_html
-
-
-def check_structural_invariants(deck_html: str) -> List[str]:
-    """Run comprehensive structural validation. Returns list of failures."""
+    Invariants (FSL-121):
+      1. count_slides == len(parse_slides) == expected_count
+      2. Every <section> is parseable by the fixture parser
+      3. Every positional class-slide-NN is unique (as set equals 1..N)
+      4. Positional numbers in document order = [1, 2, ..., N] (FSL-129)
+      5. Each slide's class number, comment number, and counter-current agree
+      6. Every counter total equals N
+      7. No extra counter-like strings outside parsed slides
+      8. Stable data-slide-id values are unique when present
+      9. No temporary token markers remain
+    """
     failures = []
 
     sl = parse_slides(deck_html)
     sc = count_slides(deck_html)
 
+    # 1. count_slides == len(parse_slides)
     if sc != len(sl):
-        failures.append(f"STRUCT-001: count_slides={sc} != parse_slides={len(sl)}")
+        failures.append(f"STRUCT-001: count_slides({sc}) != parse_slides({len(sl)})")
 
-    # Every parseable section must have its class, comment, and counter in sync
+    # Count ALL <section> elements (not just parseable ones)
+    all_sections = len(re.findall(r'<section\s', deck_html, re.IGNORECASE))
+    if sc != all_sections:
+        failures.append(
+            f"STRUCT-002: {all_sections} <section> elements but "
+            f"only {sc} match the fixture parser"
+        )
+
+    # 4. Positional numbers must be [1, 2, ..., N] in document order (FSL-129)
+    nums = extract_slide_numbers(deck_html)
+    if sc > 0 and nums != list(range(1, sc + 1)):
+        failures.append(
+            f"STRUCT-003: positional numbers in document order {nums} "
+            f"!= [1..{sc}]"
+        )
+
+    # 3. Unique positional numbers (set must equal 1..N)
+    if sc > 0 and set(nums) != set(range(1, sc + 1)):
+        failures.append(
+            f"STRUCT-004: positional number set {sorted(set(nums))} "
+            f"!= {{1..{sc}}}"
+        )
+
+    # 5 & 6. Per-slide agreement
     for i, s in enumerate(sl):
         expected_class_num = s['comment_num']
-        # Extract the actual number from class attribute
         class_match = re.search(r'slide-(\d+)', s['class_str'])
         if class_match:
             class_num = int(class_match.group(1))
             if class_num != expected_class_num:
                 failures.append(
-                    f"STRUCT-002: slide {i+1} class number {class_num} "
+                    f"STRUCT-005: slide {i+1} class number {class_num} "
                     f"!= comment number {expected_class_num}"
                 )
-        # Counter current must match slide number
         if s['counter_current'] != s['comment_num']:
             failures.append(
-                f"STRUCT-003: slide {i+1} counter current {s['counter_current']} "
+                f"STRUCT-006: slide {i+1} counter current {s['counter_current']} "
                 f"!= slide number {s['comment_num']}"
             )
-        # Counter total must equal total count
         if s['counter_total'] != sc:
             failures.append(
-                f"STRUCT-004: slide {i+1} counter total {s['counter_total']} "
+                f"STRUCT-007: slide {i+1} counter total {s['counter_total']} "
                 f"!= slide count {sc}"
             )
 
-    # Positional numbers must be exactly {1..N} (as a set)
-    nums = extract_slide_numbers(deck_html)
-    if set(nums) != set(range(1, sc + 1)):
-        if sc > 0:
-            failures.append(f"STRUCT-005: positional numbers {sorted(nums)} != 1..{sc}")
-
-    # Extra counter-like strings outside parsed slides
-    # Every counter pattern should be inside a parsed slide
-    all_counters = get_counters(deck_html)
-    parsed_counters = [(s['counter_current'], s['counter_total']) for s in sl]
-    if len(all_counters) != len(parsed_counters):
+    # 7. Extra counter-like strings outside parsed slides
+    # Only count <div class="counter"> nodes (FSL-126)
+    counter_nodes = COUNTER_PATTERN.findall(deck_html)
+    if len(counter_nodes) != len(sl):
         failures.append(
-            f"STRUCT-006: {len(all_counters)} counter instances "
-            f"in HTML vs {len(parsed_counters)} parsed slides"
+            f"STRUCT-008: {len(counter_nodes)} <div class=\"counter\"> nodes "
+            f"but {len(sl)} parsed slides"
         )
+
+    # 8. Stable data-slide-id uniqueness
+    ids = extract_data_ids(deck_html)
+    positional_ids = [f"slide-{n:02d}" for n in nums]
+    stable_ids = [i for i in ids if i not in positional_ids]
+    if len(stable_ids) != len(set(stable_ids)):
+        from collections import Counter
+        dupes = [k for k, v in Counter(stable_ids).items() if v > 1]
+        failures.append(f"STRUCT-009: duplicate stable data-slide-id: {dupes}")
+
+    # 9. No temporary marker tokens
+    for marker in ['__OLD_', 'TMP_', 'MAP_', '__BM_']:
+        if marker in deck_html:
+            failures.append(f"STRUCT-010: temporary marker '{marker}' remains")
+            break
 
     return failures
 
 
+def require_valid_source(deck_html: str) -> None:
+    """Strict source validation. Raises ValueError on any failure."""
+    failures = strict_validate(deck_html)
+    if failures:
+        raise ValueError(
+            f"Source deck validation failed ({len(failures)} issue(s)):\n" +
+            "\n".join(f"  - {f}" for f in failures)
+        )
+
+
 def verify_operation(deck_html: str, expected_count: int,
                      check_data_id: bool = False) -> List[str]:
-    """Run all validation checks. Return list of failures (empty = PASS)."""
-    failures = []
-
-    # Structural invariants
-    failures.extend(check_structural_invariants(deck_html))
+    """Post-operation validation. Return list of failures (empty = PASS)."""
+    failures = strict_validate(deck_html)
 
     c = count_slides(deck_html)
     if c != expected_count:
         failures.append(f"Expected {expected_count} slides, got {c}")
 
-    dupes = validate_uniqueness(deck_html)
-    if dupes:
-        failures.append(f"Duplicate slide numbers: {dupes}")
-
     if check_data_id:
-        did_dupes = validate_data_id_uniqueness(deck_html)
-        if did_dupes:
-            failures.append(f"Duplicate data-slide-id: {did_dupes}")
-
-    if not validate_no_markers(deck_html):
-        failures.append("Temporary markers (__OLD_, TMP_, MAP_) remain in output")
+        ids = extract_data_ids(deck_html)
+        if len(ids) != len(set(ids)):
+            from collections import Counter
+            dupes = [k for k, v in Counter(ids).items() if v > 1]
+            failures.append(f"Duplicate data-slide-id: {dupes}")
 
     return failures
 
 
 # ---------------------------------------------------------------------------
-# Resequencing (positional metadata only)
+# Resequencing (FSL-126: per-slide replacement, no global regex)
 # ---------------------------------------------------------------------------
 
 def resequence(deck_html: str) -> str:
     """Renumber positional metadata sequentially from 1.
 
-    Updates: slide class numbers, HTML comments, div.counter values,
-    and positional data-slide-id values.
+    Updates: slide class numbers, HTML comments, counter elements,
+    and positional data-slide-id values (slide-NN format).
 
     Preserves: non-positional data-slide-id (topic-NNN format),
-    payload text, all other content.
+    payload text, all other content byte-for-byte.
+
+    Uses per-slide replacement — never applies regex to payload text.
     """
     slides = parse_slides(deck_html)
     total = len(slides)
@@ -312,62 +393,27 @@ def resequence(deck_html: str) -> str:
     if total == 0:
         return deck_html
 
-    # First pass: replace all positional numbers with unique temporary markers
-    for i, s in enumerate(slides):
-        old = s['full_html']
-        old_num_str = f"{s['comment_num']:02d}"
-        new_marker = f"TMP_{i:04d}"
-
-        new_html = old
-        new_html = new_html.replace(f"slide-{old_num_str}", f"slide-{new_marker}", 1)
-        new_html = new_html.replace(f"SLIDE {old_num_str}", f"SLIDE {new_marker}", 1)
-
-        # Only update positional data-slide-id (e.g., slide-NN format)
-        # Preserve non-positional stable IDs (e.g., topic-NNN format)
-        positional_did = f'data-slide-id="slide-{old_num_str}"'
-        new_html = new_html.replace(
-            positional_did,
-            f'data-slide-id="slide-{new_marker}"',
-        )
-
-        # Replace counter-current (first occurrence in the slide)
-        new_html = new_html.replace(f">{old_num_str} /", f">{new_marker} /", 1)
-
-        deck_html = deck_html.replace(old, new_html, 1)
-
-    # Second pass: replace markers with sequential numbers
-    for i in range(1, total + 1):
-        marker = f"TMP_{i-1:04d}"
-        target = f"{i:02d}"
-
-        deck_html = deck_html.replace(f"slide-{marker}", f"slide-{target}")
-        deck_html = deck_html.replace(f"SLIDE {marker}", f"SLIDE {target}")
-        deck_html = deck_html.replace(
-            f'data-slide-id="slide-{marker}"',
-            f'data-slide-id="slide-{target}"',
-        )
-        deck_html = deck_html.replace(f">{marker} /", f">{target} /")
-
-    # Update all counter totals to match actual slide count
-    deck_html = re.sub(
-        r'(\d+)\s*/\s*\d+',
-        lambda m: f"{m.group(1)} / {total:02d}",
-        deck_html,
-    )
+    # Replace slides one by one (backward to preserve positions)
+    for idx in range(total - 1, -1, -1):
+        s = slides[idx]
+        new_num = idx + 1
+        new_html = _build_updated_slide(s, new_num, total)
+        deck_html = _replace_slide_in_deck(deck_html, s['full_html'], new_html)
 
     return deck_html
 
 
 # ---------------------------------------------------------------------------
-# Structural operations
+# Structural operations (FSL-127: pre/post validation)
 # ---------------------------------------------------------------------------
 
 def insert_slide(deck_html: str, position: int, new_slide_html: str) -> str:
     """Insert a new slide at 1-based position, then resequence.
 
-    Validates that new_slide_html is a single parseable section fragment
-    (not a complete HTML document).
+    Pre-validates source deck and fragment.
+    Post-validates result.
     """
+    require_valid_source(deck_html)
     validate_fragment(new_slide_html)
 
     slides = parse_slides(deck_html)
@@ -394,15 +440,30 @@ def insert_slide(deck_html: str, position: int, new_slide_html: str) -> str:
 
     result = resequence(deck_html)
 
-    # Verify no nested document structure
+    # Post-condition: single DOCTYPE
     if count_doctypes(result) != 1:
         raise RuntimeError(f"Result has {count_doctypes(result)} DOCTYPE declarations")
+
+    # Post-condition validation
+    post_failures = verify_operation(
+        result, total + 1, check_data_id=True
+    )
+    if post_failures:
+        raise RuntimeError(
+            f"Post-condition validation failed:\n" +
+            "\n".join(f"  - {f}" for f in post_failures)
+        )
 
     return result
 
 
 def delete_slide(deck_html: str, position: int) -> str:
-    """Delete the slide at 1-based position, then resequence."""
+    """Delete the slide at 1-based position, then resequence.
+
+    Pre-validates source deck. Post-validates result.
+    """
+    require_valid_source(deck_html)
+
     slides = parse_slides(deck_html)
     total = len(slides)
 
@@ -415,12 +476,27 @@ def delete_slide(deck_html: str, position: int) -> str:
         raise ValueError(f"Could not find slide at position {position}")
 
     deck_html = deck_html[:idx] + deck_html[idx + len(target):]
+    result = resequence(deck_html)
 
-    return resequence(deck_html)
+    post_failures = verify_operation(
+        result, total - 1, check_data_id=True
+    )
+    if post_failures:
+        raise RuntimeError(
+            f"Post-condition validation failed:\n" +
+            "\n".join(f"  - {f}" for f in post_failures)
+        )
+
+    return result
 
 
 def reorder_slides(deck_html: str, from_pos: int, to_pos: int) -> str:
-    """Move a slide from 1-based from_pos to 1-based to_pos, then resequence."""
+    """Move a slide from 1-based from_pos to 1-based to_pos.
+
+    Pre-validates source deck. Post-validates result.
+    """
+    require_valid_source(deck_html)
+
     slides = parse_slides(deck_html)
     total = len(slides)
 
@@ -452,11 +528,22 @@ def reorder_slides(deck_html: str, from_pos: int, to_pos: int) -> str:
         idx = deck_html.find(target)
         deck_html = deck_html[:idx] + moving.rstrip('\n') + '\n' + deck_html[idx:]
 
-    return resequence(deck_html)
+    result = resequence(deck_html)
+
+    post_failures = verify_operation(
+        result, total, check_data_id=True
+    )
+    if post_failures:
+        raise RuntimeError(
+            f"Post-condition validation failed:\n" +
+            "\n".join(f"  - {f}" for f in post_failures)
+        )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Exact batch renumbering
+# Exact batch renumbering (FSL-125, FSL-126)
 # ---------------------------------------------------------------------------
 
 class MappingError(ValueError):
@@ -464,25 +551,29 @@ class MappingError(ValueError):
 
 
 def batch_renumber(deck_html: str, mapping: Dict[int, int]) -> str:
-    """Collision-safe batch renumbering with an exact complete mapping.
+    """Collision-safe batch renumbering with exact complete mapping.
 
-    CONTRACT:
+    CONTRACT (FSL-125):
       - mapping must be a complete bijection from every existing positional
         slide number to every desired final positional number.
       - Keys must exactly equal the current set of positional slide numbers.
-      - Values must be unique (no duplicate targets).
-      - Values must encompass the full required final number set (normally 1..N).
+      - Values must be unique.
+      - Values must be exactly {1..N} where N = number of slides.
       - Partial mappings, missing keys, unknown keys, duplicate targets,
-        gaps, or out-of-range values fail with MappingError.
+        gaps, out-of-range values, and non-monotonic values all fail
+        with MappingError.
 
     Example valid mapping (swap slides 3 and 4 in a 5-slide deck):
       {1: 1, 2: 2, 3: 4, 4: 3, 5: 5}
 
-    The function updates: slide class numbers, HTML comments, counters,
+    Updates: slide class numbers, HTML comments, counter elements,
     and positional data-slide-id values.
 
-    Non-positional data-slide-id values (e.g., topic-NNN) are preserved.
+    Preserves: non-positional data-slide-id values (topic-NNN), payload text.
+    Uses per-slide replacement — never applies regex to payload text.
     """
+    require_valid_source(deck_html)
+
     all_slides = parse_slides(deck_html)
     total = len(all_slides)
     current_nums = set(s['comment_num'] for s in all_slides)
@@ -510,64 +601,41 @@ def batch_renumber(deck_html: str, mapping: Dict[int, int]) -> str:
             f"Mapping values must be unique; duplicate targets: {sorted(dupes)}"
         )
 
-    if max(map_vals) > total + len(map_vals - set(range(1, total + 1))):
-        # Allow value sets that extend beyond 1..N (shifts), but check range
-        pass
-
-    # Check values form a reasonable range (start from 1, no gaps)
-    # For a complete shift (6→7, 7→8...), max value can exceed N
-    min_val = min(map_vals)
-    if min_val != 1:
+    # FSL-125: values must be exactly {1..N}
+    expected_values = set(range(1, total + 1))
+    if map_vals != expected_values:
+        extra_vals = map_vals - expected_values
+        missing_vals = expected_values - map_vals
+        parts = []
+        if extra_vals:
+            parts.append(f"out-of-range values: {sorted(extra_vals)}")
+        if missing_vals:
+            parts.append(f"missing values: {sorted(missing_vals)}")
         raise MappingError(
-            f"Mapping values must start at 1, got min={min_val}"
+            f"Mapping values must be exactly {{1..{total}}}. "
+            f"{' '.join(parts)}"
         )
 
-    # Phase 1: replace every slide's positional metadata with unique markers
-    for i, s in enumerate(all_slides):
-        old = s['full_html']
-        old_num = s['comment_num']
-        old_str = f"{old_num:02d}"
-        marker = f"__BM_{i:04d}__"
-
-        new_html = old
-        new_html = new_html.replace(f"slide-{old_str}", f"slide-{marker}", 1)
-        new_html = new_html.replace(f"SLIDE {old_str}", f"SLIDE {marker}" , 1)
-
-        # Positional data-slide-id only
-        old_pos_did = f'data-slide-id="slide-{old_str}"'
-        new_html = new_html.replace(
-            old_pos_did,
-            f'data-slide-id="slide-{marker}"',
-        )
-
-        new_html = new_html.replace(f">{old_str} /", f">{marker} /", 1)
-
-        deck_html = deck_html.replace(old, new_html, 1)
-
-    # Phase 2: replace markers with mapped final values
-    for i, s in enumerate(all_slides):
+    # Replace slides one by one with their mapped values
+    result = deck_html
+    for idx in range(total - 1, -1, -1):
+        s = all_slides[idx]
         old_num = s['comment_num']
         new_num = mapping[old_num]
-        new_str = f"{new_num:02d}"
-        marker = f"__BM_{i:04d}__"
+        new_html = _build_updated_slide(s, new_num, total)
+        result = _replace_slide_in_deck(result, s['full_html'], new_html)
 
-        deck_html = deck_html.replace(f"slide-{marker}", f"slide-{new_str}")
-        deck_html = deck_html.replace(f"SLIDE {marker}", f"SLIDE {new_str}")
-        deck_html = deck_html.replace(
-            f'data-slide-id="slide-{marker}"',
-            f'data-slide-id="slide-{new_str}"',
+    # Verify no marker tokens remain (FSL-131)
+    for marker in ['__BM_', '__OLD_', 'TMP_', 'MAP_']:
+        if marker in result:
+            raise RuntimeError(f"Marker '{marker}' remains after batch_renumber")
+
+    # Post-condition validation
+    post_failures = verify_operation(result, total, check_data_id=True)
+    if post_failures:
+        raise RuntimeError(
+            f"Post-condition validation failed:\n" +
+            "\n".join(f"  - {f}" for f in post_failures)
         )
-        deck_html = deck_html.replace(f">{marker} /", f">{new_str} /")
 
-    # Verify no markers remain
-    if '__BM_' in deck_html:
-        raise RuntimeError(f"Unreplaced batch markers remain")
-
-    # Update all counter totals
-    deck_html = re.sub(
-        r'(\d+)\s*/\s*\d+',
-        lambda m: f"{m.group(1)} / {total:02d}",
-        deck_html,
-    )
-
-    return deck_html
+    return result
