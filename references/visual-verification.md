@@ -70,8 +70,17 @@ the following JavaScript checks (in browser console or via
 browser automation tool):
 
 ```javascript
-// 1. Web font loading
-await document.fonts.ready;
+// 1. Web font loading — with bounded timeout
+const FONT_TIMEOUT_MS = 10000;
+const fontReady = Promise.race([
+  document.fonts.ready,
+  new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(
+      `Font loading timed out after ${FONT_TIMEOUT_MS} ms`
+    )), FONT_TIMEOUT_MS)
+  ),
+]);
+await fontReady;
 
 // 2. Every image resolves as loaded or fails — with bounded timeout
 const withTimeout = (promise, ms, label) =>
@@ -82,8 +91,10 @@ const withTimeout = (promise, ms, label) =>
     ),
   ]);
 
-const imageChecks = [...document.images].map((img, index) =>
-  withTimeout(
+const imageChecks = [...document.images].map((img, index) => {
+  const label =
+    `Image ${index + 1}: ${img.currentSrc || img.src || "(missing src)"}`;
+  return withTimeout(
     new Promise((resolve, reject) => {
       if (img.complete) {
         if (img.naturalWidth > 0) {
@@ -93,7 +104,6 @@ const imageChecks = [...document.images].map((img, index) =>
         }
         return;
       }
-
       img.addEventListener("load", resolve, { once: true });
       img.addEventListener(
         "error",
@@ -102,45 +112,67 @@ const imageChecks = [...document.images].map((img, index) =>
       );
     }),
     10000,
-    `Image ${index + 1}`
-  )
-);
+    label,
+  );
+});
 
 await Promise.all(imageChecks);
 
-// 3. Animations and transitions settled
-//    Preferred: disable motion by injecting reduced-motion CSS
-const motionStyle = document.createElement('style');
-motionStyle.textContent = '*, *::before, *::after { ' +
-  'transition: none !important; ' +
-  'animation: none !important; ' +
-  'transition-delay: 0s !important; ' +
-  'animation-delay: 0s !important; }';
-document.head.appendChild(motionStyle);
+// 3. Animations and transitions settled — mutually exclusive paths
+//    Path A (preferred): inject CSS to disable all motion.
+function disableMotionWithCSS() {
+  const style = document.createElement('style');
+  style.textContent = '*, *::before, *::after { ' +
+    'transition: none !important; ' +
+    'animation: none !important; ' +
+    'transition-delay: 0s !important; ' +
+    'animation-delay: 0s !important; }';
+  document.head.appendChild(style);
+  // Wait two animation frames as a small bounded stabilization barrier
+  return new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+}
 
-//    Fallback (if motion cannot be disabled): compute maximum
-//    transition/animation duration plus delay from computed styles,
-//    apply a bounded timeout, and report the calculated wait.
-//    Do not rely only on a hard-coded 1200 ms sleep.
-const computedMotionDelay = (() => {
+//    Path B (fallback, only if Path A unavailable): compute max
+//    transition/animation duration from computed styles, apply
+//    a bounded timeout, and report the calculated wait.
+async function waitForMotionFallback() {
   const all = document.querySelectorAll('*');
   let maxMs = 0;
   all.forEach(el => {
     const cs = getComputedStyle(el);
-    const dur = cs.transitionDuration || '0s';
-    const del = cs.transitionDelay || '0s';
-    const parseMs = (s) => {
-      if (s.endsWith('ms')) return parseFloat(s);
-      if (s.endsWith('s')) return parseFloat(s) * 1000;
-      return 0;
-    };
-    const t = parseMs(dur) + parseMs(del);
-    if (t > maxMs) maxMs = t;
+    for (const prop of ['transitionDuration', 'animationDuration']) {
+      const vals = (cs[prop] || '0s').split(',');
+      const delays = ((prop === 'transitionDuration'
+        ? cs.transitionDelay : cs.animationDelay) || '0s').split(',');
+      vals.forEach((dur, i) => {
+        const del = delays[i] || delays[0] || '0s';
+        const parseMs = (s) => {
+          s = s.trim();
+          if (s.endsWith('ms')) return parseFloat(s);
+          if (s.endsWith('s')) return parseFloat(s) * 1000;
+          return 0;
+        };
+        const t = parseMs(dur) + parseMs(del);
+        if (t > maxMs) maxMs = t;
+      });
+    }
   });
-  return Math.max(maxMs, 1200);
-})();
-console.log(`Motion settle delay: ${computedMotionDelay} ms`);
-await new Promise(r => setTimeout(r, computedMotionDelay));
+  // Cap the wait at 5000 ms with a clear message
+  const MAX_MOTION_WAIT = 5000;
+  const waitMs = Math.min(Math.max(maxMs, 200), MAX_MOTION_WAIT);
+  console.log(`Motion settle delay (fallback): ${waitMs} ms ` +
+    `(computed max ${maxMs} ms, capped at ${MAX_MOTION_WAIT} ms)`);
+  await new Promise(r => setTimeout(r, waitMs));
+}
+
+// Choose one path — do not execute both:
+// Set this to true if CSS injection is not possible.
+const MOTION_CSS_INJECTION_UNAVAILABLE = false;
+if (MOTION_CSS_INJECTION_UNAVAILABLE) {
+  await waitForMotionFallback();
+} else {
+  await disableMotionWithCSS();
+}
 
 // 4. Active slide found — fail if unresolved
 const activeSlide = document.querySelector('.slide.active') ||
@@ -152,27 +184,38 @@ if (!activeSlide) {
   );
 }
 
-// 5. Stage dimensions — use the selector identified during Phase 0
-const PHASE_0_STAGE_SELECTOR = '#stage'; // adjust based on Phase 0 findings
-const stage = document.querySelector(PHASE_0_STAGE_SELECTOR) ||
-              document.querySelector('.stage') ||
-              document.querySelector('[class*="stage"]');
+// 5. Stage dimensions — use ONLY the selector discovered during Phase 0.
+//    Do NOT fall back to generic selectors — fail closed if it's missing.
+const PHASE_0_STAGE_SELECTOR = '#stage'; // ← set during Phase 0
+const stage = document.querySelector(PHASE_0_STAGE_SELECTOR);
 if (!stage) {
   throw new Error(
-    `Authored stage not found using selector: ${PHASE_0_STAGE_SELECTOR}`
+    `Authored stage not found using Phase 0 selector: ${PHASE_0_STAGE_SELECTOR}`
   );
 }
-const sr = stage.getBoundingClientRect();
+
+// Measure authored dimensions using offsetWidth/offsetHeight (pre-transform)
+// rather than getBoundingClientRect() which reports scaled viewport size.
+// Frontend Slides scales a 1920×1080 stage to fit the viewport, so the
+// bounding rectangle may not equal 1920×1080 even for a correct deck.
+const authoredW = stage.offsetWidth;
+const authoredH = stage.offsetHeight;
+const authoredRect = stage.getBoundingClientRect();
+
 const expectedW = 1920, expectedH = 1080;
-if (Math.abs(sr.width - expectedW) > 1 || Math.abs(sr.height - expectedH) > 1) {
+if (Math.abs(authoredW - expectedW) > 1 || Math.abs(authoredH - expectedH) > 1) {
   console.warn(
-    `Stage dimensions: ${Math.round(sr.width)}×${Math.round(sr.height)} ` +
+    `Authored stage dimensions: ${authoredW}×${authoredH} ` +
     `(expected ${expectedW}×${expectedH}). ` +
-    `Using detected authored dimensions (${Math.round(sr.width)}×${Math.round(sr.height)}) ` +
-    `for bounds checks and screenshots.`
+    `Using authored dimensions (${authoredW}×${authoredH}) ` +
+    `for bounds checks. ` +
+    `Rendered viewport rect: ${Math.round(authoredRect.width)}×${Math.round(authoredRect.height)}`
   );
 } else {
-  console.log(`Stage OK: ${Math.round(sr.width)}×${Math.round(sr.height)}`);
+  console.log(
+    `Stage OK: authored ${authoredW}×${authoredH}, ` +
+    `rendered ${Math.round(authoredRect.width)}×${Math.round(authoredRect.height)}`
+  );
 }
 ```
 
@@ -199,21 +242,14 @@ if (!slide) {
   //   - hidden elements (display:none, visibility:hidden)
   //   - zero-size elements (width/height = 0)
   //   - intentionally off-stage inactive slides (opacity: 0)
-  //   - decorative overflow explicitly allowed by the deck
   //   - SVG filter or shadow bounds extending past the element
   //
-  // Use an explicit allowlist for intentional overflow elements:
-  const overflowAllowlist = ['.decoration', '.shadow', '.glow-effect'];
+  // Use data-allow-overflow attribute for intentional overflow elements.
+  // Document every such element in the verification evidence.
+  // Do not use hard-coded broad class selectors like '.shadow'.
   slide.querySelectorAll('*').forEach(el => {
-    // Check allowlist first
-    let matchesAllowlist = false;
-    for (const sel of overflowAllowlist) {
-      if (el.matches && el.matches(sel)) {
-        matchesAllowlist = true;
-        break;
-      }
-    }
-    if (matchesAllowlist) return;
+    // Check allowlist — elements with data-allow-overflow attribute are exempt
+    if (el.hasAttribute && el.hasAttribute('data-allow-overflow')) return;
 
     const r = el.getBoundingClientRect();
     const sr = slide.getBoundingClientRect();

@@ -244,6 +244,26 @@ class TestValidatorNegative(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
+    def _sync_refs(self):
+        """Sync root→plugin references after both copies are mutated."""
+        ref_dir = os.path.join(self.tmpdir, "references")
+        plugin_ref_dir = os.path.join(
+            self.tmpdir, "plugins", "frontend-slides", "skills",
+            "frontend-slides", "references"
+        )
+        for fname in os.listdir(ref_dir):
+            shutil.copy(
+                os.path.join(ref_dir, fname),
+                os.path.join(plugin_ref_dir, fname),
+            )
+
+    def _assert_diagnostic(self, rc, output, code):
+        """Assert validator failed with a specific diagnostic code."""
+        self.assertNotEqual(rc, 0,
+                            f"Expected nonzero exit for {code}")
+        self.assertIn(code, output,
+                      f"Expected diagnostic {code} in output")
+
     def _add_malformed_marketplace(self):
         """Replace valid marketplace command with leading-pipe version."""
         readme = os.path.join(self.tmpdir, "README.md")
@@ -321,43 +341,73 @@ class TestValidatorNegative(unittest.TestCase):
 
     def test_validator_rejects_malformed_marketplace(self):
         self._add_malformed_marketplace()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject leading-pipe command")
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-MARKETPLACE-CMD")
 
     def test_validator_rejects_upstream_install_url(self):
         self._add_upstream_install_url()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject upstream install URL")
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-UPSTREAM-INSTALL")
 
     def test_validator_rejects_pkill(self):
         self._add_pkill()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject pkill -f")
+        self._sync_refs()  # Both copies must have same defect for targeted test
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-PKILL")
 
     def test_validator_rejects_basic_grep(self):
         self._add_basic_grep()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject bare \\d grep")
+        self._sync_refs()
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-BARE-GREP")
 
     def test_validator_rejects_automatic_split(self):
         self._add_automatic_split_threshold()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject automatic split rules")
+        self._sync_refs()
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-SPLIT-THRESHOLD")
 
     def test_validator_rejects_root_plugin_divergence(self):
         self._break_root_plugin_sync()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject root/plugin divergence")
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-MIRROR-DIVERGENCE")
 
     def test_validator_rejects_stale_workflow_ref(self):
         self._add_stale_workflow_ref()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject stale iterative-slide-workflow.md ref")
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-STALE-WORKFLOW")
 
     def test_validator_rejects_missing_tests(self):
         self._remove_test_file()
-        rc, _ = run_validator(self.tmpdir)
-        self.assertNotEqual(rc, 0, "Validator should reject missing test file")
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-MISSING-FIXTURE-TEST")
+
+    def test_validator_rejects_foreground_server(self):
+        """Add a foreground http.server block (no &, no PID)."""
+        vv = os.path.join(self.tmpdir, "references", "visual-verification.md")
+        with open(vv) as f:
+            content = f.read()
+        content = content.replace(
+            'python3 -m http.server "$PORT" --bind 127.0.0.1 >preview-server.log 2>&1 &',
+            'python3 -m http.server "$PORT" --bind 127.0.0.1',
+        )
+        with open(vv, "w") as f:
+            f.write(content)
+        self._sync_refs()
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-FOREGROUND-SERVER")
+
+    def test_validator_rejects_missing_reference(self):
+        """Remove a referenced file (STYLE_PRESETS.md) from both copies."""
+        for suffix in ["", "-plugin-placeholder"]:
+            for d in [self.tmpdir,
+                      os.path.join(self.tmpdir, "plugins", "frontend-slides",
+                                   "skills", "frontend-slides")]:
+                p = os.path.join(d, "STYLE_PRESETS.md")
+                if os.path.exists(p):
+                    os.remove(p)
+        rc, output = run_validator(self.tmpdir)
+        self._assert_diagnostic(rc, output, "PKG-MISSING-REFERENCE")
 
     def test_validator_accepts_clean_repo(self):
         """Sanity check: the minimal repo should pass all checks."""

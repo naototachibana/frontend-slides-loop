@@ -94,7 +94,7 @@ for ref in sorted(plugin_refs):
     plugin_skill_dir = os.path.dirname(PLUGIN_SKILL_MD)
     target = os.path.join(plugin_skill_dir, ref)
     if not os.path.exists(target):
-        err(f"Plugin SKILL.md references {ref} but file not found at {target}")
+        err(f"PKG-MISSING-REFERENCE: Plugin SKILL.md references {ref} but file not found at {target}")
     else:
         print(f"  OK: {ref} (plugin)")
 
@@ -106,7 +106,7 @@ if os.path.exists(SKILL_MD) and os.path.exists(PLUGIN_SKILL_MD):
     if filecmp.cmp(SKILL_MD, PLUGIN_SKILL_MD, shallow=False):
         print("  OK: SKILL.md identical")
     else:
-        err("SKILL.md differs between root and plugin")
+        err("PKG-MIRROR-DIVERGENCE: SKILL.md differs between root and plugin")
 else:
     err("SKILL.md missing from root or plugin")
 
@@ -115,7 +115,7 @@ if os.path.isdir(REF_DIR) and os.path.isdir(PLUGIN_REF_DIR):
     root_files = set(os.listdir(REF_DIR))
     plugin_files = set(os.listdir(PLUGIN_REF_DIR))
     if root_files != plugin_files:
-        err(f"Reference file sets differ: root={root_files}, plugin={plugin_files}")
+        err(f"PKG-MIRROR-DIVERGENCE: Reference file sets differ: root={root_files}, plugin={plugin_files}")
     else:
         for fname in root_files:
             root_f = os.path.join(REF_DIR, fname)
@@ -123,7 +123,7 @@ if os.path.isdir(REF_DIR) and os.path.isdir(PLUGIN_REF_DIR):
             if filecmp.cmp(root_f, plugin_f, shallow=False):
                 print(f"  OK: references/{fname} identical")
             else:
-                err(f"references/{fname} differs between root and plugin")
+                err(f"PKG-MIRROR-DIVERGENCE: references/{fname} differs between root and plugin")
 else:
     err("Reference directory missing from root or plugin")
 
@@ -160,7 +160,7 @@ for fpath in files_to_scan:
         lines = content.split("\n")
         for i, line in enumerate(lines, 1):
             if "iterative-slide-workflow.md" in line and not line.strip().startswith("#") and "removed" not in line.lower():
-                err(f"{os.path.basename(fpath)}:{i} still references iterative-slide-workflow.md: {line.strip()}")
+                err(f"PKG-STALE-WORKFLOW: {os.path.basename(fpath)}:{i} still references iterative-slide-workflow.md: {line.strip()}")
                 break
         else:
             print(f"  OK: {os.path.basename(fpath)} (only commit/removal references)")
@@ -216,14 +216,14 @@ if os.path.exists(README_MD):
         if fork_url in url:
             print(f"  OK: {url}")
         elif upstream_url in url:
-            err(f"Install URL still points to upstream: {url}")
+            err(f"PKG-UPSTREAM-INSTALL: Install URL still points to upstream: {url}")
             install_fail = True
         else:
             pass  # non-GitHub URLs, fine
 
     # Also check the marketplace install command
     if "/plugin marketplace add" in readme and fork_url not in readme[readme.index("/plugin marketplace add"):readme.index("/plugin marketplace add")+200]:
-        err("Marketplace install command does not point to fork")
+        err("PKG-MARKETPLACE-CMD: Marketplace install command does not point to fork")
 
     if not install_fail:
         print("  OK: All install URLs point to the fork")
@@ -366,7 +366,7 @@ if os.path.exists(README_MD):
         readme = f.read()
     pipe_commands = re.findall(r'^\s*\|/plugin marketplace add', readme, re.MULTILINE)
     if pipe_commands:
-        err(f"README has {len(pipe_commands)} marketplace command(s) with leading pipe: {pipe_commands}")
+        err(f"PKG-MARKETPLACE-CMD: README has {len(pipe_commands)} marketplace command(s) with leading pipe: {pipe_commands}")
     else:
         print("  OK: No leading-pipe marketplace commands")
 
@@ -375,7 +375,7 @@ if os.path.exists(README_MD):
     if valid_cmd in readme:
         print(f"  OK: Valid marketplace command found")
     else:
-        err("README missing valid marketplace install command")
+        err("PKG-STALE-WORKFLOW: README missing valid marketplace install command")
 
 # ---------------------------------------------------------------------------
 # 12. No pkill -f in references
@@ -389,10 +389,45 @@ for fname in os.listdir(ref_dir):
     with open(fpath) as f:
         content = f.read()
     if "pkill -f" in content:
-        err(f"{fname} uses 'pkill -f' instead of PID-scoped cleanup")
+        err(f"PKG-PKILL: {fname} uses 'pkill -f' instead of PID-scoped cleanup")
         break
 else:
     print("  OK: No 'pkill -f' in reference files")
+
+# ---------------------------------------------------------------------------
+# 11b. No foreground-server + same-shell curl (PKG-FOREGROUND-SERVER)
+# ---------------------------------------------------------------------------
+print("\\n--- Check 11b: No foreground-server + same-shell commands ---")
+found_foreground = False
+for fpath in [README_MD, os.path.join(REF_DIR, "visual-verification.md")]:
+    if not os.path.exists(fpath):
+        continue
+    with open(fpath) as f:
+        content = f.read()
+    in_bash = False
+    has_fg = False
+    has_curl = False
+    for line in content.split("\n"):
+        if line.strip().startswith("```bash"):
+            in_bash = True
+            has_fg = False
+            has_curl = False
+            continue
+        elif line.strip().startswith("```") and in_bash:
+            if has_fg and has_curl:
+                err("PKG-FOREGROUND-SERVER: "
+                    f"{os.path.basename(fpath)} has backgroundless "
+                    f"http.server followed by curl in same block")
+                found_foreground = True
+            in_bash = False
+            continue
+        if in_bash:
+            if "http.server" in line and "&" not in line:
+                has_fg = True
+            if "curl" in line:
+                has_curl = True
+if not found_foreground:
+    print("  OK: No foreground-server blocks detected")
 
 # ---------------------------------------------------------------------------
 # 13. No automatic 12-CJK or 30%-image split rules
@@ -409,9 +444,9 @@ if os.path.exists(ie_path):
         has_automatic_12 = "12 CJK" in s8 and "heuristic" not in s8[:s8.find("12 CJK")+50].lower()
         has_automatic_30 = "30" in s8 and "%" in s8 and "heuristic" not in s8[:s8.find("30")+50].lower()
         if has_automatic_12:
-            err("Section 8 lists 12-CJK as automatic split condition (should be heuristic)")
+            err("PKG-SPLIT-THRESHOLD: Section 8 lists 12-CJK as automatic split condition (should be heuristic)")
         elif has_automatic_30:
-            err("Section 8 lists 30%-image as automatic split condition (should be heuristic)")
+            err("PKG-SPLIT-THRESHOLD: Section 8 lists 30%-image as automatic split condition (should be heuristic)")
         else:
             print("  OK: Split rules use heuristics, not automatic thresholds")
     else:
@@ -438,9 +473,9 @@ for fname in os.listdir(ref_dir):
             continue
         if in_bash:
             # Check for grep with \d without -P or -E
-            m = re.search(r'grep\s+(?!-P)(?!-E)(-[a-zA-Z]*[^PE])?\s+[\"\']?[^\"\']*\\\\d', line)
+            m = re.search(r'grep\s+(?!-P)(?!-E)(-[a-zA-Z]*[^PE])?\s+[\"\']?[^\"\']*\\d', line)
             if m:
-                err(f"{fname}:{i} uses grep without -P/-E with \\d: {line.strip()[:80]}")
+                err(f"PKG-BARE-GREP: {fname}:{i} uses grep without -P/-E with \\\\d: {line.strip()[:80]}")
                 break
     else:
         print(f"  OK: {fname} — grep commands use correct flavor")
@@ -473,10 +508,10 @@ if os.path.exists(test_path):
         count = m.group(1) if m else "?"
         print(f"  OK: {count} fixture tests PASSED")
     else:
-        err(f"Fixture test suite exited {result.returncode}")
+        err(f"PKG-MISSING-FIXTURE-TEST: Fixture test suite exited {result.returncode}")
         print(f"  FAIL: See test output above")
 else:
-    err("Missing scripts/test-renumbering.py")
+    err("PKG-MISSING-FIXTURE-TEST: Missing scripts/test-renumbering.py")
 
 # ---------------------------------------------------------------------------
 # Summary
