@@ -73,28 +73,40 @@ browser automation tool):
 // 1. Web font loading
 await document.fonts.ready;
 
-// 2. Every image resolves as loaded or fails explicitly
-const imagePromises = [...document.images].map(img => {
-  if (img.complete) {
-    if (img.naturalWidth === 0) {
-      return Promise.reject(
-        new Error(`Broken image (already complete): ${img.currentSrc || img.src}`)
+// 2. Every image resolves as loaded or fails — with bounded timeout
+const withTimeout = (promise, ms, label) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms)
+    ),
+  ]);
+
+const imageChecks = [...document.images].map((img, index) =>
+  withTimeout(
+    new Promise((resolve, reject) => {
+      if (img.complete) {
+        if (img.naturalWidth > 0) {
+          resolve();
+        } else {
+          reject(new Error(`Broken image: ${img.currentSrc || img.src}`));
+        }
+        return;
+      }
+
+      img.addEventListener("load", resolve, { once: true });
+      img.addEventListener(
+        "error",
+        () => reject(new Error(`Broken image: ${img.currentSrc || img.src}`)),
+        { once: true }
       );
-    }
-    return Promise.resolve();
-  }
-  return new Promise((resolve, reject) => {
-    img.addEventListener("load", resolve, { once: true });
-    img.addEventListener(
-      "error",
-      () => reject(
-        new Error(`Broken image: ${img.currentSrc || img.src}`)
-      ),
-      { once: true }
-    );
-  });
-});
-await Promise.all(imagePromises);
+    }),
+    10000,
+    `Image ${index + 1}`
+  )
+);
+
+await Promise.all(imageChecks);
 
 // 3. Animations and transitions settled
 //    Preferred: disable motion by injecting reduced-motion CSS
@@ -106,10 +118,29 @@ motionStyle.textContent = '*, *::before, *::after { ' +
   'animation-delay: 0s !important; }';
 document.head.appendChild(motionStyle);
 
-//    Fallback (if motion cannot be disabled): wait for calculated
-//    max transition duration + delay. Use at least 1200 ms for
-//    canonical Frontend Slides decks.
-await new Promise(r => setTimeout(r, 1200));
+//    Fallback (if motion cannot be disabled): compute maximum
+//    transition/animation duration plus delay from computed styles,
+//    apply a bounded timeout, and report the calculated wait.
+//    Do not rely only on a hard-coded 1200 ms sleep.
+const computedMotionDelay = (() => {
+  const all = document.querySelectorAll('*');
+  let maxMs = 0;
+  all.forEach(el => {
+    const cs = getComputedStyle(el);
+    const dur = cs.transitionDuration || '0s';
+    const del = cs.transitionDelay || '0s';
+    const parseMs = (s) => {
+      if (s.endsWith('ms')) return parseFloat(s);
+      if (s.endsWith('s')) return parseFloat(s) * 1000;
+      return 0;
+    };
+    const t = parseMs(dur) + parseMs(del);
+    if (t > maxMs) maxMs = t;
+  });
+  return Math.max(maxMs, 1200);
+})();
+console.log(`Motion settle delay: ${computedMotionDelay} ms`);
+await new Promise(r => setTimeout(r, computedMotionDelay));
 
 // 4. Active slide found — fail if unresolved
 const activeSlide = document.querySelector('.slide.active') ||
@@ -121,25 +152,27 @@ if (!activeSlide) {
   );
 }
 
-// 5. Stage dimensions — verify, not just log
-const stageSelectors = ['#stage', '.stage', '[class*="stage"]'];
-let stage = null;
-for (const sel of stageSelectors) {
-  stage = document.querySelector(sel);
-  if (stage) break;
+// 5. Stage dimensions — use the selector identified during Phase 0
+const PHASE_0_STAGE_SELECTOR = '#stage'; // adjust based on Phase 0 findings
+const stage = document.querySelector(PHASE_0_STAGE_SELECTOR) ||
+              document.querySelector('.stage') ||
+              document.querySelector('[class*="stage"]');
+if (!stage) {
+  throw new Error(
+    `Authored stage not found using selector: ${PHASE_0_STAGE_SELECTOR}`
+  );
 }
-if (stage) {
-  const sr = stage.getBoundingClientRect();
-  const expectedW = 1920, expectedH = 1080;
-  if (Math.abs(sr.width - expectedW) > 1 || Math.abs(sr.height - expectedH) > 1) {
-    console.warn(
-      `Stage dimensions: ${Math.round(sr.width)}×${Math.round(sr.height)} ` +
-      `(expected ${expectedW}×${expectedH}). ` +
-      `Using detected authored dimensions for verification.`
-    );
-  } else {
-    console.log(`Stage OK: ${Math.round(sr.width)}×${Math.round(sr.height)}`);
-  }
+const sr = stage.getBoundingClientRect();
+const expectedW = 1920, expectedH = 1080;
+if (Math.abs(sr.width - expectedW) > 1 || Math.abs(sr.height - expectedH) > 1) {
+  console.warn(
+    `Stage dimensions: ${Math.round(sr.width)}×${Math.round(sr.height)} ` +
+    `(expected ${expectedW}×${expectedH}). ` +
+    `Using detected authored dimensions (${Math.round(sr.width)}×${Math.round(sr.height)}) ` +
+    `for bounds checks and screenshots.`
+  );
+} else {
+  console.log(`Stage OK: ${Math.round(sr.width)}×${Math.round(sr.height)}`);
 }
 ```
 
@@ -162,16 +195,38 @@ if (!slide) {
     report('vertical overflow: ' + (slide.scrollHeight - slide.clientHeight) + 'px');
 
   // Bounding box — child elements must stay within the slide
+  // To avoid false positives, skip:
+  //   - hidden elements (display:none, visibility:hidden)
+  //   - zero-size elements (width/height = 0)
+  //   - intentionally off-stage inactive slides (opacity: 0)
+  //   - decorative overflow explicitly allowed by the deck
+  //   - SVG filter or shadow bounds extending past the element
+  //
+  // Use an explicit allowlist for intentional overflow elements:
+  const overflowAllowlist = ['.decoration', '.shadow', '.glow-effect'];
   slide.querySelectorAll('*').forEach(el => {
+    // Check allowlist first
+    let matchesAllowlist = false;
+    for (const sel of overflowAllowlist) {
+      if (el.matches && el.matches(sel)) {
+        matchesAllowlist = true;
+        break;
+      }
+    }
+    if (matchesAllowlist) return;
+
     const r = el.getBoundingClientRect();
     const sr = slide.getBoundingClientRect();
+    // Skip zero-size elements
+    if (r.width === 0 || r.height === 0) return;
+
     if (r.left < sr.left - 0.5 || r.top < sr.top - 0.5 ||
         r.right > sr.right + 0.5 || r.bottom > sr.bottom + 0.5) {
-      // Only report visible elements to avoid false positives
       const style = getComputedStyle(el);
-      if (style.display !== 'none' && style.visibility !== 'hidden') {
+      if (style.display !== 'none' && style.visibility !== 'hidden' &&
+          parseFloat(style.opacity) > 0) {
         report('element outside slide boundary: ' +
-          el.tagName + (el.className ? '.' + el.className : ''));
+          el.tagName + (el.className ? '.' + el.className.split(' ').join('.') : ''));
       }
     }
   });

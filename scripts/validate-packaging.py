@@ -31,6 +31,7 @@ import os
 import re
 import sys
 import filecmp
+import subprocess
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SKILL_MD = os.path.join(REPO_ROOT, "SKILL.md")
@@ -189,9 +190,20 @@ if os.path.exists(README_MD):
 
     for url in sorted(set(github_urls)):
         # URLs inside attribution / upstream / credits context
-        if any(ctx in readme[max(0, readme.index(url)-200):readme.index(url)+len(url)+200].lower()
-               for ctx in ["upstream", "attribution", "credit", "originate"]):
-            attribution_urls.append(url)
+        # Check only the line the URL appears on plus previous line
+        # to avoid false attribution from nearby sections.
+        url_line = None
+        for i, line in enumerate(readme.split("\n")):
+            if url in line:
+                url_line = i
+                break
+        if url_line is not None:
+            lines = readme.split("\n")
+            check_text = " ".join(lines[max(0, url_line-1):url_line+1]).lower()
+            if any(ctx in check_text for ctx in ["upstream", "attribution", "credit", "originate"]):
+                attribution_urls.append(url)
+            else:
+                install_urls.append(url)
         else:
             install_urls.append(url)
 
@@ -279,7 +291,7 @@ for fpath in [SKILL_MD, os.path.join(REF_DIR, "iterative-editing.md"),
 # ---------------------------------------------------------------------------
 # 9. Numbered-slide examples and regexes work for 8, 12, 20 slides
 # ---------------------------------------------------------------------------
-print("\\n--- Check 9: Numbered-slide handling ---")
+print("\\n--- Check 9: Numbered-slide handling (documentation patterns) ---")
 ref_path = os.path.join(REF_DIR, "iterative-editing.md")
 if os.path.exists(ref_path):
     with open(ref_path) as f:
@@ -317,11 +329,8 @@ if os.path.exists(ref_path):
     else:
         print("  OK: no single-digit-only grep patterns")
 
-    # Note: A full runtime test would create an 8, 12, or 20-slide fixture
-    # deck using the standard template, run insertion/deletion/reordering,
-    # and verify identity uniqueness. That requires browser automation.
-    print("  INFO: Runtime fixture tests not possible without browser.")
-    print("  INFO: Static pattern validation performed instead.")
+    # Note: Executable fixture tests verify these operations end-to-end.
+    # See scripts/test-renumbering.py.
 
 # ---------------------------------------------------------------------------
 # 10. Relative link paths
@@ -437,24 +446,37 @@ for fname in os.listdir(ref_dir):
         print(f"  OK: {fname} — grep commands use correct flavor")
 
 # ---------------------------------------------------------------------------
-# 15. Check 9 coverage accuracy
+# 15. Execute fixture test suite
 # ---------------------------------------------------------------------------
-print("\n--- Check 15: Check 9 coverage accuracy ---")
-print("  NOTE: Check 9 validates documentation patterns statically.")
-print("  NOTE: Executable fixture tests are in scripts/test-renumbering.py.")
-print("  NOTE: The fixture tests verify 8, 12, 20 slides, 9→10 boundary,")
-print("  NOTE: collision-safe renumbering, data-slide-id uniqueness, etc.")
-
-# Check for the fixture test file
+print("\\n--- Check 15: Execute fixture test suite ---")
 test_path = os.path.join(REPO_ROOT, "scripts", "test-renumbering.py")
 if os.path.exists(test_path):
-    with open(test_path) as f:
-        test_content = f.read()
-    test_count = len(re.findall(r'def test_', test_content))
-    print(f"  OK: {test_count} fixture tests in scripts/test-renumbering.py")
+    result = subprocess.run(
+        [sys.executable, test_path],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+    )
+    # Print stdout (test output)
+    for line in result.stdout.split("\\n"):
+        if line.strip():
+            print(f"  {line}")
+    if result.stderr:
+        for line in result.stderr.split("\\n"):
+            if line.strip():
+                print(f"  STDERR: {line}")
+
+    if result.returncode == 0:
+        # Extract test count from output
+        import re as re2
+        m = re2.search(r"Ran (\d+) tests in", result.stdout)
+        count = m.group(1) if m else "?"
+        print(f"  OK: {count} fixture tests PASSED")
+    else:
+        err(f"Fixture test suite exited {result.returncode}")
+        print(f"  FAIL: See test output above")
 else:
-    err("Missing scripts/test-renumbering.py (executable fixtures)")
-    print(f"\n{'='*50}")
+    err("Missing scripts/test-renumbering.py")
 
 # ---------------------------------------------------------------------------
 # Summary
