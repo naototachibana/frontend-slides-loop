@@ -62,11 +62,25 @@ accommodate the new text after editing.
 4. Update `alt` text if the subject changed.
 5. Hand off for visual verification.
 
-### Local-preview caveat
+### Local-preview and relative assets
 
-A single-file HTTP serve does not resolve relative image paths. If the
-deck is served this way and images must be local, serve the entire
-directory or switch to an external URL for images.
+When a deck uses **bundle mode** (HTML + sibling assets), serving the
+deck's parent directory as the HTTP document root allows relative asset
+paths (`src="images/photo.png"`) to resolve normally.
+
+Relative paths fail only when the HTML file is exposed without its
+sibling files — for example, opening `file://` or serving a single
+file with a tool that does not serve the surrounding directory.
+
+Rules by output mode:
+
+- **Single-file mode (default)**: embed all assets as data URIs.
+  No external file dependencies.
+- **Bundle mode**: serve the entire bundle directory. Verify every
+  referenced asset exists relative to the HTML file, both at rest
+  and when served.
+- **External mode**: use remote URLs only with explicit user acceptance.
+  Record external dependencies in the final report.
 
 ---
 
@@ -144,12 +158,24 @@ When restructuring a slide's layout:
 
 ## 8. Splitting and merging
 
-**Split** when any of these is true:
+**Split** when content exceeds the authored stage content area
+(determined by the deck's CSS variables and container dimensions).
+This is an objective defect — content must never overflow.
 
-- text column has fewer than 12 CJK characters per line at reading size
-- an image is smaller than 30 % of its column
-- a card or table row is clipped
-- total content exceeds the stage content area
+Cards, tables, or panels whose content is visibly clipped should
+also be split or restructured.
+
+The following are **diagnostic heuristics** that may indicate a
+split is worth considering, but are not automatic failure conditions:
+
+- If a text column has fewer than roughly 12 CJK characters per line
+  at reading size, the column may be unnecessarily wide for its
+  content length.
+- If an image is visually smaller than ~30% of its column width,
+  it may be undersized for its container.
+
+Evaluate these in context with screenshot inspection. Do not treat
+aesthetic narrowness or layout preference as deterministic failures.
 
 Move a subset of content to a new slide inserted immediately after.
 Follow insertion procedure.
@@ -205,7 +231,7 @@ grep -oP '<section[^>]*class="[^"]*slide-\d+[^"]*"[^>]*>' deck.html |
 
 # Verify identity count matches expected total
 if [ "$(grep -oP '<section[^>]*class="[^"]*slide[^"]*"[^>]*>' deck.html |
-         grep -c 'slide-\d')" -eq "$NEW_COUNT" ]; then
+         grep -Pc 'slide-\d')" -eq "$NEW_COUNT" ]; then
   echo "OK: $NEW_COUNT identities found"
 fi
 
@@ -213,24 +239,6 @@ fi
 grep -oP '\b\d{2}\s*/\s*\d{2}\b' deck.html | sort -u
 # Verify each counter pair matches the expected totals
 ```
-
-### Split heuristics
-
-The following observations from real-world decks are
-**reference heuristics**, not general failure conditions.
-Evaluate them in context:
-
-- If a text column has fewer than roughly 12 CJK characters
-  per line at reading size, the column may be too wide for
-  its content; splitting could improve readability.
-- If an image is visually smaller than ~30% of its column
-  width, it may be undersized for its container.
-- Cards, tables, or panels whose content is visibly clipped
-  should be split or restructured regardless of numeric
-  heuristics.
-- When total content exceeds the authored stage content area
-  (determined by the deck's CSS variables and container
-  dimensions), splitting is required — not heuristic.
 
 ---
 

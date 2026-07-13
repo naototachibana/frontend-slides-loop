@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/ef57333e-f879-432a-afb9-180388982478
 Install directly from this public GitHub repo. Run these as two separate Claude Code messages; do not paste both lines into the prompt at once.
 
 ```text
-|/plugin marketplace add https://github.com/naototachibana/frontend-slides-loop
+/plugin marketplace add https://github.com/naototachibana/frontend-slides-loop
 ```
 
 After that finishes, run:

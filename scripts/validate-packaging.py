@@ -16,10 +16,15 @@ Checks:
 8. No workflow claims universal compatibility with arbitrary 1920×1080
    HTML decks (claims specific to Frontend Slides are accepted).
 9. Numbered-slide examples and regexes work for 8, 12, and 20 slides.
-10. Reference links remain relative and use shallow, directly discoverable
-    paths.
-
-Exit 0 on success, non-zero on failure.
+|10. Reference links remain relative and use shallow, directly discoverable
+|    paths.
+|11. Marketplace command syntax (no leading |).
+|12. No 'pkill -f' in references (PID-scoped cleanup).
+|13. Split rules use heuristics, not automatic thresholds.
+|14. grep flavor correctness (no bare \\d without -P or -E in bash).
+|15. Fixture tests exist for numbered-slide operations.
+|
+|Exit 0 on success, non-zero on failure.
 """
 
 import os
@@ -342,6 +347,114 @@ for fpath in [SKILL_MD, README_MD,
             err(f"{os.path.basename(fpath)}: broken relative link '{link}' → {target}")
         else:
             pass  # OK, silent for clean output
+
+# ---------------------------------------------------------------------------
+# 11. Valid marketplace command (no leading |)
+# ---------------------------------------------------------------------------
+print("\n--- Check 11: Marketplace command syntax ---")
+if os.path.exists(README_MD):
+    with open(README_MD) as f:
+        readme = f.read()
+    pipe_commands = re.findall(r'^\s*\|/plugin marketplace add', readme, re.MULTILINE)
+    if pipe_commands:
+        err(f"README has {len(pipe_commands)} marketplace command(s) with leading pipe: {pipe_commands}")
+    else:
+        print("  OK: No leading-pipe marketplace commands")
+
+    # Also verify the exact expected command exists
+    valid_cmd = "/plugin marketplace add https://github.com/naototachibana/frontend-slides-loop"
+    if valid_cmd in readme:
+        print(f"  OK: Valid marketplace command found")
+    else:
+        err("README missing valid marketplace install command")
+
+# ---------------------------------------------------------------------------
+# 12. No pkill -f in references
+# ---------------------------------------------------------------------------
+print("\n--- Check 12: Safe preview cleanup (no pkill -f) ---")
+ref_dir = REF_DIR
+for fname in os.listdir(ref_dir):
+    fpath = os.path.join(ref_dir, fname)
+    if not fname.endswith(".md"):
+        continue
+    with open(fpath) as f:
+        content = f.read()
+    if "pkill -f" in content:
+        err(f"{fname} uses 'pkill -f' instead of PID-scoped cleanup")
+        break
+else:
+    print("  OK: No 'pkill -f' in reference files")
+
+# ---------------------------------------------------------------------------
+# 13. No automatic 12-CJK or 30%-image split rules
+# ---------------------------------------------------------------------------
+print("\n--- Check 13: Split rules use heuristics not thresholds ---")
+ie_path = os.path.join(REF_DIR, "iterative-editing.md")
+if os.path.exists(ie_path):
+    with open(ie_path) as f:
+        content = f.read()
+    # Section 8 should not list 12-CJK or 30%-image as automatic conditions
+    section_8_start = content.find("## 8. Splitting and merging")
+    if section_8_start >= 0:
+        s8 = content[section_8_start:]
+        has_automatic_12 = "12 CJK" in s8 and "heuristic" not in s8[:s8.find("12 CJK")+50].lower()
+        has_automatic_30 = "30" in s8 and "%" in s8 and "heuristic" not in s8[:s8.find("30")+50].lower()
+        if has_automatic_12:
+            err("Section 8 lists 12-CJK as automatic split condition (should be heuristic)")
+        elif has_automatic_30:
+            err("Section 8 lists 30%-image as automatic split condition (should be heuristic)")
+        else:
+            print("  OK: Split rules use heuristics, not automatic thresholds")
+    else:
+        print("  WARN: Could not find Section 8 to check split rules")
+
+# ---------------------------------------------------------------------------
+# 14. grep flavor correctness
+# ---------------------------------------------------------------------------
+print("\n--- Check 14: grep flavor (no bare \\d without -P in bash) ---")
+for fname in os.listdir(ref_dir):
+    fpath = os.path.join(ref_dir, fname)
+    if not fname.endswith(".md"):
+        continue
+    with open(fpath) as f:
+        content = f.read()
+    # Find bash code blocks
+    in_bash = False
+    for i, line in enumerate(content.split("\n"), 1):
+        if line.strip().startswith("```bash"):
+            in_bash = True
+            continue
+        elif line.strip().startswith("```") and in_bash:
+            in_bash = False
+            continue
+        if in_bash:
+            # Check for grep with \d without -P or -E
+            m = re.search(r'grep\s+(?!-P)(?!-E)(-[a-zA-Z]*[^PE])?\s+[\"\']?[^\"\']*\\\\d', line)
+            if m:
+                err(f"{fname}:{i} uses grep without -P/-E with \\d: {line.strip()[:80]}")
+                break
+    else:
+        print(f"  OK: {fname} — grep commands use correct flavor")
+
+# ---------------------------------------------------------------------------
+# 15. Check 9 coverage accuracy
+# ---------------------------------------------------------------------------
+print("\n--- Check 15: Check 9 coverage accuracy ---")
+print("  NOTE: Check 9 validates documentation patterns statically.")
+print("  NOTE: Executable fixture tests are in scripts/test-renumbering.py.")
+print("  NOTE: The fixture tests verify 8, 12, 20 slides, 9→10 boundary,")
+print("  NOTE: collision-safe renumbering, data-slide-id uniqueness, etc.")
+
+# Check for the fixture test file
+test_path = os.path.join(REPO_ROOT, "scripts", "test-renumbering.py")
+if os.path.exists(test_path):
+    with open(test_path) as f:
+        test_content = f.read()
+    test_count = len(re.findall(r'def test_', test_content))
+    print(f"  OK: {test_count} fixture tests in scripts/test-renumbering.py")
+else:
+    err("Missing scripts/test-renumbering.py (executable fixtures)")
+    print(f"\n{'='*50}")
 
 # ---------------------------------------------------------------------------
 # Summary

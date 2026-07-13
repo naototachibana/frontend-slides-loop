@@ -9,32 +9,57 @@ appearance of a Frontend Slides-compatible HTML deck.
 
 ## 0. Local preview setup
 
-Before running the verification loop, make the deck available over HTTP:
+Before running the verification loop, make the deck available over HTTP.
+Use a PID-scoped background server and stop only that specific process.
 
 ```bash
-# Single-file deck: serve its parent directory
-cd /path/to/deck/directory
-python3 -m http.server 8000 --bind 127.0.0.1
+# Determine the deck directory to serve as document root
+#   - Single-file mode:  parent directory of the HTML file
+#   - Bundle mode:       the bundle directory containing index.html + assets
+DECK_DIR="/path/to/deck/directory"
 
-# Verify the server responds
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/index.html
-# Expected: 200
+# Pick an available port (default 8000, change if occupied)
+PORT=8000
+
+# Start the server, capturing the exact PID
+cd "$DECK_DIR"
+python3 -m http.server "$PORT" --bind 127.0.0.1 >preview-server.log 2>&1 &
+PREVIEW_PID=$!
+echo "Preview server PID: $PREVIEW_PID"
+echo "URL: http://127.0.0.1:$PORT/index.html"
+
+# Verify it responds
+sleep 1
+if curl --fail --silent --show-error \
+  "http://127.0.0.1:$PORT/index.html" >/dev/null; then
+  echo "Server is ready"
+else
+  echo "Server failed to respond"
+  kill "$PREVIEW_PID" 2>/dev/null
+  exit 1
+fi
 ```
 
 Open the deck in a browser or browser automation tool:
 
-- If the deck supports `?slide=N`: `http://127.0.0.1:8000/index.html?slide=1`
+- If the deck supports `?slide=N`:
+  `http://127.0.0.1:8000/index.html?slide=1`
 - If it does not: navigate with keyboard arrow keys after opening the URL
 
-**Cleanup after verification:**
+**Cleanup after verification — stop only the PID we started:**
 
 ```bash
-kill %1 2>/dev/null
-# or
-pkill -f "python3 -m http.server 8000" 2>/dev/null
+kill "$PREVIEW_PID" 2>/dev/null || true
+# Optionally remove the temporary log
+rm -f preview-server.log
 ```
 
-> **Note**: Tailscale Serve or similar tunnel services are optional adapters. Do not use them as the default preview method. If you must use Tailscale Serve, inspect current status first (`tailscale serve status`), do not use `sudo`, and provide cleanup instructions.
+> **Port conflicts**: If port 8000 is occupied, change `PORT=8000` to another
+> value and update the URLs consistently.
+>
+> **Tailscale Serve**: Optional adapter only. Do not use as default preview.
+> If you must use it, inspect current status first (`tailscale serve status`),
+> do not use `sudo`, and provide cleanup instructions.
 
 ---
 
@@ -48,34 +73,73 @@ browser automation tool):
 // 1. Web font loading
 await document.fonts.ready;
 
-// 2. All images loaded or explicitly failed
-const images = document.querySelectorAll('img');
-const allLoaded = [...images].every(
-  img => img.complete && img.naturalWidth > 0
-);
+// 2. Every image resolves as loaded or fails explicitly
+const imagePromises = [...document.images].map(img => {
+  if (img.complete) {
+    if (img.naturalWidth === 0) {
+      return Promise.reject(
+        new Error(`Broken image (already complete): ${img.currentSrc || img.src}`)
+      );
+    }
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    img.addEventListener("load", resolve, { once: true });
+    img.addEventListener(
+      "error",
+      () => reject(
+        new Error(`Broken image: ${img.currentSrc || img.src}`)
+      ),
+      { once: true }
+    );
+  });
+});
+await Promise.all(imagePromises);
 
-// 3. Animations and transitions settled:
-//    Standard Frontend Slides decks have 0.6s transition +
-//    max 0.4s stagger delay. Wait at least 1200 ms after
-//    slide change.
+// 3. Animations and transitions settled
+//    Preferred: disable motion by injecting reduced-motion CSS
+const motionStyle = document.createElement('style');
+motionStyle.textContent = '*, *::before, *::after { ' +
+  'transition: none !important; ' +
+  'animation: none !important; ' +
+  'transition-delay: 0s !important; ' +
+  'animation-delay: 0s !important; }';
+document.head.appendChild(motionStyle);
+
+//    Fallback (if motion cannot be disabled): wait for calculated
+//    max transition duration + delay. Use at least 1200 ms for
+//    canonical Frontend Slides decks.
 await new Promise(r => setTimeout(r, 1200));
 
-// 4. Active slide found
+// 4. Active slide found — fail if unresolved
 const activeSlide = document.querySelector('.slide.active') ||
                     document.querySelector('.slide.visible');
 if (!activeSlide) {
-  throw new Error('No active or visible slide found');
+  throw new Error(
+    'No active or visible slide found. ' +
+    'Cannot proceed with visual verification.'
+  );
 }
 
-// 5. Stage dimensions at authored coordinate system
-//    (expected 1920×1080 for Frontend Slides decks)
-const stage = document.querySelector('#stage') ||
-              document.querySelector('.stage') ||
-              document.querySelector('[class*="stage"]');
+// 5. Stage dimensions — verify, not just log
+const stageSelectors = ['#stage', '.stage', '[class*="stage"]'];
+let stage = null;
+for (const sel of stageSelectors) {
+  stage = document.querySelector(sel);
+  if (stage) break;
+}
 if (stage) {
   const sr = stage.getBoundingClientRect();
-  // Log actual dimensions for reference
-  console.log(`Stage: ${sr.width}×${sr.height}`);
+  const expectedW = 1920, expectedH = 1080;
+  if (Math.abs(sr.width - expectedW) > 1 || Math.abs(sr.height - expectedH) > 1) {
+    console.warn(
+      `Stage dimensions: ${Math.round(sr.width)}×${Math.round(sr.height)} ` +
+      `(expected ${expectedW}×${expectedH}). ` +
+      `Using detected authored dimensions for verification.`
+    );
+  } else {
+    console.log(`Stage OK: ${Math.round(sr.width)}×${Math.round(sr.height)}`);
+  }
 }
 ```
 
