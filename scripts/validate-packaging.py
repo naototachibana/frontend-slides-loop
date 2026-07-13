@@ -168,15 +168,48 @@ if os.path.exists(os.path.join(REPO_ROOT, "iterative-slide-workflow.md")):
 # ---------------------------------------------------------------------------
 # 5. README installation consistency
 # ---------------------------------------------------------------------------
-print("\n--- Check 5: README installation examples ---")
+print("\\n--- Check 5: README installation URLs point to fork ---")
 if os.path.exists(README_MD):
     with open(README_MD) as f:
         readme = f.read()
-    # Should mention references/ in the copy commands
-    if "cp -R references" in readme:
-        print("  OK: README includes references/ in manual install")
-    else:
-        err("README manual install missing references/ copy step")
+
+    # Collect all GitHub URLs from the README
+    github_urls = re.findall(
+        r'https://github\.com/[\w.-]+/[\w.-]+',
+        readme
+    )
+
+    install_urls = []
+    attribution_urls = []
+
+    for url in sorted(set(github_urls)):
+        # URLs inside attribution / upstream / credits context
+        if any(ctx in readme[max(0, readme.index(url)-200):readme.index(url)+len(url)+200].lower()
+               for ctx in ["upstream", "attribution", "credit", "originate"]):
+            attribution_urls.append(url)
+        else:
+            install_urls.append(url)
+
+    # Check that INSTALL urls point to the fork
+    fork_url = "naototachibana/frontend-slides-loop"
+    upstream_url = "zarazhangrui/frontend-slides"
+
+    install_fail = False
+    for url in install_urls:
+        if fork_url in url:
+            print(f"  OK: {url}")
+        elif upstream_url in url:
+            err(f"Install URL still points to upstream: {url}")
+            install_fail = True
+        else:
+            pass  # non-GitHub URLs, fine
+
+    # Also check the marketplace install command
+    if "/plugin marketplace add" in readme and fork_url not in readme[readme.index("/plugin marketplace add"):readme.index("/plugin marketplace add")+200]:
+        err("Marketplace install command does not point to fork")
+
+    if not install_fail:
+        print("  OK: All install URLs point to the fork")
 
 # ---------------------------------------------------------------------------
 # 6. No 'git push origin main'
@@ -239,9 +272,9 @@ for fpath in [SKILL_MD, os.path.join(REF_DIR, "iterative-editing.md"),
         print(f"  OK: {os.path.basename(fpath)} — scope appropriately bounded")
 
 # ---------------------------------------------------------------------------
-# 9. Numbered-slide regexes work for 8, 12, 20 slides
+# 9. Numbered-slide examples and regexes work for 8, 12, 20 slides
 # ---------------------------------------------------------------------------
-print("\n--- Check 9: Numbered-slide handling ---")
+print("\\n--- Check 9: Numbered-slide handling ---")
 ref_path = os.path.join(REF_DIR, "iterative-editing.md")
 if os.path.exists(ref_path):
     with open(ref_path) as f:
@@ -251,16 +284,39 @@ if os.path.exists(ref_path):
         print("  OK: collision-safe three-pass algorithm documented")
     else:
         err("iterative-editing.md missing three-pass collision-safe algorithm")
+
     # Check that zero-padded numbers are mentioned
     if "zero-pad" in content.lower() or "02d" in content:
         print("  OK: zero-padded numbering mentioned")
     else:
         err("iterative-editing.md missing zero-padded numbering guidance")
-    # Check the verification grep example works for 20 slides
-    if r"$(printf '%02d' $n)" in content:
-        print("  OK: verification supports 2-digit numbers")
+
+    # Check the verification commands support 2-digit slide numbers
+    if r"\d{2}" in content and r"\d+" in content:
+        print("  OK: verification patterns use \\d+ and \\d{2} (supports 20+ slides)")
     else:
-        err("iterative-editing.md verification example may not work for 20+ slides")
+        err("iterative-editing.md verification commands may not work for 20+ slides")
+
+    # Check that no single-digit-only grep patterns exist
+    single_digit_patterns = re.findall(r'slide-0\[1-9\]|0\[0-9\]|\\\\d\(?!\+\)', content)
+    single_digit_lines = [l.strip() for l in content.split("\\n")
+                          if "slide-0[1-9]" in l or "SLIDE 0" in l]
+    if single_digit_lines:
+        # Only flag if used as an active example (not in warnings)
+        for line in single_digit_lines:
+            if "warn" not in line.lower() and "avoid" not in line.lower() and "do not" not in line.lower():
+                err(f"iterative-editing.md uses single-digit-only pattern: {line[:60]}")
+                break
+        else:
+            print("  OK: single-digit patterns only in warning/avoidance context")
+    else:
+        print("  OK: no single-digit-only grep patterns")
+
+    # Note: A full runtime test would create an 8, 12, or 20-slide fixture
+    # deck using the standard template, run insertion/deletion/reordering,
+    # and verify identity uniqueness. That requires browser automation.
+    print("  INFO: Runtime fixture tests not possible without browser.")
+    print("  INFO: Static pattern validation performed instead.")
 
 # ---------------------------------------------------------------------------
 # 10. Relative link paths

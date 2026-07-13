@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/ef57333e-f879-432a-afb9-180388982478
 Install directly from this public GitHub repo. Run these as two separate Claude Code messages; do not paste both lines into the prompt at once.
 
 ```text
-/plugin marketplace add https://github.com/zarazhangrui/frontend-slides
+|/plugin marketplace add https://github.com/naototachibana/frontend-slides-loop
 ```
 
 After that finishes, run:
@@ -69,7 +69,7 @@ cp scripts/extract-pptx.py scripts/deploy.sh scripts/export-pdf.sh ~/.claude/ski
 Or clone directly:
 
 ```bash
-git clone https://github.com/zarazhangrui/frontend-slides.git ~/.claude/skills/frontend-slides
+git clone https://github.com/naototachibana/frontend-slides-loop.git ~/.claude/skills/frontend-slides
 ```
 
 Then use it by typing `/frontend-slides` in Claude Code. Standalone skills are not namespaced.
@@ -79,7 +79,7 @@ Then use it by typing `/frontend-slides` in Claude Code. Standalone skills are n
 Agents such as Codex, Kimi Code, OpenCode, Gemini CLI, or other local coding assistants can use the same core skill. The simplest path is to send the agent this GitHub repo link and ask it to use the Frontend Slides skill:
 
 ```text
-https://github.com/zarazhangrui/frontend-slides
+https://github.com/naototachibana/frontend-slides-loop
 ```
 
 If the agent can read GitHub repos or browse files, it should start from `SKILL.md` and load only the referenced support files it needs:
@@ -95,6 +95,8 @@ If the agent can read GitHub repos or browse files, it should start from `SKILL.
 Some agents can also install the skill for you if they have filesystem access and a known local skills directory. If not, they can still follow `SKILL.md` directly for the current session.
 
 The Claude Code plugin gives Claude Code a custom marketplace-source install flow and `/frontend-slides:frontend-slides` command. Other agents usually do not use that command surface.
+
+> **Upstream attribution**: This is a fork of [zarazhangrui/frontend-slides](https://github.com/zarazhangrui/frontend-slides). All design templates, core architecture, and creative direction originate from the upstream project.
 
 ## Usage
 

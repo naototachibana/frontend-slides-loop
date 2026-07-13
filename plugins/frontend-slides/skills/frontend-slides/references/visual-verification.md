@@ -7,19 +7,77 @@ appearance of a Frontend Slides-compatible HTML deck.
 
 ---
 
+## 0. Local preview setup
+
+Before running the verification loop, make the deck available over HTTP:
+
+```bash
+# Single-file deck: serve its parent directory
+cd /path/to/deck/directory
+python3 -m http.server 8000 --bind 127.0.0.1
+
+# Verify the server responds
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/index.html
+# Expected: 200
+```
+
+Open the deck in a browser or browser automation tool:
+
+- If the deck supports `?slide=N`: `http://127.0.0.1:8000/index.html?slide=1`
+- If it does not: navigate with keyboard arrow keys after opening the URL
+
+**Cleanup after verification:**
+
+```bash
+kill %1 2>/dev/null
+# or
+pkill -f "python3 -m http.server 8000" 2>/dev/null
+```
+
+> **Note**: Tailscale Serve or similar tunnel services are optional adapters. Do not use them as the default preview method. If you must use Tailscale Serve, inspect current status first (`tailscale serve status`), do not use `sudo`, and provide cleanup instructions.
+
+---
+
 ## 1. Deterministic readiness
 
-Before inspecting, confirm the page is in a stable state:
+Before inspecting, confirm the page is in a stable state. Use
+the following JavaScript checks (in browser console or via
+browser automation tool):
 
-- `document.fonts.ready` has resolved
-- All relevant `<img>` elements have `naturalWidth > 0` or have
-  fired an `onerror` (not still pending)
-- Animations and transitions are settled — either wait a reasonable
-  timeout (at least 300 ms after the slide change) or disable
-  animations via `prefers-reduced-motion` for verification
-- The intended slide is the active slide
-- The fixed stage has the expected dimensions (1920×1080 at the
-  authored coordinate system)
+```javascript
+// 1. Web font loading
+await document.fonts.ready;
+
+// 2. All images loaded or explicitly failed
+const images = document.querySelectorAll('img');
+const allLoaded = [...images].every(
+  img => img.complete && img.naturalWidth > 0
+);
+
+// 3. Animations and transitions settled:
+//    Standard Frontend Slides decks have 0.6s transition +
+//    max 0.4s stagger delay. Wait at least 1200 ms after
+//    slide change.
+await new Promise(r => setTimeout(r, 1200));
+
+// 4. Active slide found
+const activeSlide = document.querySelector('.slide.active') ||
+                    document.querySelector('.slide.visible');
+if (!activeSlide) {
+  throw new Error('No active or visible slide found');
+}
+
+// 5. Stage dimensions at authored coordinate system
+//    (expected 1920×1080 for Frontend Slides decks)
+const stage = document.querySelector('#stage') ||
+              document.querySelector('.stage') ||
+              document.querySelector('[class*="stage"]');
+if (stage) {
+  const sr = stage.getBoundingClientRect();
+  // Log actual dimensions for reference
+  console.log(`Stage: ${sr.width}×${sr.height}`);
+}
+```
 
 ---
 
@@ -30,24 +88,63 @@ Run automated checks before screenshot inspection:
 ```javascript
 const slide = document.querySelector('.slide.active') ||
               document.querySelector('.slide.visible');
+if (!slide) {
+  report('no active slide to inspect');
+} else {
+  // Overflow
+  if (slide.scrollWidth > slide.clientWidth)
+    report('horizontal overflow: ' + (slide.scrollWidth - slide.clientWidth) + 'px');
+  if (slide.scrollHeight > slide.clientHeight)
+    report('vertical overflow: ' + (slide.scrollHeight - slide.clientHeight) + 'px');
 
-// Overflow
-if (slide.scrollWidth > slide.clientWidth)
-  report('horizontal overflow');
-if (slide.scrollHeight > slide.clientHeight)
-  report('vertical overflow');
+  // Bounding box — child elements must stay within the slide
+  slide.querySelectorAll('*').forEach(el => {
+    const r = el.getBoundingClientRect();
+    const sr = slide.getBoundingClientRect();
+    if (r.left < sr.left - 0.5 || r.top < sr.top - 0.5 ||
+        r.right > sr.right + 0.5 || r.bottom > sr.bottom + 0.5) {
+      // Only report visible elements to avoid false positives
+      const style = getComputedStyle(el);
+      if (style.display !== 'none' && style.visibility !== 'hidden') {
+        report('element outside slide boundary: ' +
+          el.tagName + (el.className ? '.' + el.className : ''));
+      }
+    }
+  });
 
-// Images
-slide.querySelectorAll('img').forEach(img => {
-  if (img.naturalWidth === 0)
-    report('broken image: ' + img.src);
-});
+  // Images
+  slide.querySelectorAll('img').forEach(img => {
+    if (img.naturalWidth === 0)
+      report('broken image: ' + (img.src || 'no src'));
+    // Aspect ratio check (only if natural dimensions known)
+    if (img.naturalWidth > 0 && img.width > 0) {
+      const expectedRatio = img.naturalWidth / img.naturalHeight;
+      const actualRatio = img.width / img.height;
+      if (Math.abs(expectedRatio - actualRatio) > 0.05)
+        report('aspect ratio distortion: ' + img.src);
+    }
+  });
 
-// Duplicate slide IDs
-const ids = [...document.querySelectorAll('[data-slide-id]')]
-  .map(el => el.getAttribute('data-slide-id'));
-if (new Set(ids).size !== ids.length)
-  report('duplicate slide IDs');
+  // Counter validation (if counters exist)
+  const counterEl = slide.querySelector('.counter, .page-number, [class*="counter"]');
+  if (counterEl) {
+    const text = counterEl.textContent.trim();
+    const match = text.match(/(\d+)\s*\/\s*(\d+)/);
+    if (match) {
+      const totalSlides = document.querySelectorAll('.slide').length;
+      if (parseInt(match[2]) !== totalSlides)
+        report('counter total mismatch: ' + match[2] + ' vs ' + totalSlides + ' slides');
+    }
+  }
+
+  // Duplicate slide IDs
+  const ids = [...document.querySelectorAll('[data-slide-id]')]
+    .map(el => el.getAttribute('data-slide-id'));
+  if (new Set(ids).size !== ids.length) {
+    const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+    report('duplicate slide IDs: ' + [...new Set(dupes)].join(', '));
+  }
+}
 ```
 
 ---

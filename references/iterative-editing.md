@@ -2,15 +2,16 @@
 
 A companion reference for **Mode C** of `frontend-slides/SKILL.md`.
 
-Apply these procedures when modifying an existing Frontend Slides-compatible
-HTML deck: editing text, replacing images, adjusting layout, inserting or
-removing slides, splitting or merging content, or reordering the deck.
+Apply these procedures when modifying an existing Frontend
+Slides-compatible 1920×1080 fixed-stage HTML deck, or a compatible
+external deck whose structure has first been detected and validated.
 
 ---
 
-## 1. Baseline inspection
+## 1. Baseline inspection (Phase 0)
 
-Before any edit, determine:
+Before any edit, determine the deck's actual structure — do not
+assume a specific template convention:
 
 - **Slide selector and count**: how many `.slide` elements exist
 - **Slide identity mechanism**: numbered class (`.slide-01`), `data-slide-id`,
@@ -43,14 +44,19 @@ accommodate the new text after editing.
 ## 3. Image replacement
 
 1. Obtain the source image (download from URL, local path, or data URI).
-2. Determine the output mode of the deck:
+2. Determine the output mode of the deck. The default is
+   **single-file mode** (matching Frontend Slides' zero-dependency
+   principle). Change mode only when required and disclosed.
 
-   - **Single-file mode** — embed the image as a data URI or keep an
-     external URL. Do not silently introduce sibling-file dependencies.
+   - **Single-file mode (default, recommended)** — embed the image as
+     a data URI. Do not silently introduce sibling-file dependencies.
    - **Bundle mode** — place the image in the deck's asset directory
-     and use a relative `src` path. Verify the path at rest and served.
+     and use a relative `src` path. Verify the path at rest and
+     when served over HTTP. The entire directory is the deliverable.
    - **External mode** — use a remote URL only when the user has
-     explicitly accepted external hosting.
+     explicitly accepted external hosting or hotlinking. Do not
+     treat an external host as the default solution for local-preview
+     path problems. Record external dependencies in the final report.
 
 3. Update the `<img src="...">` attribute.
 4. Update `alt` text if the subject changed.
@@ -188,14 +194,43 @@ numbers (e.g. `slide-0[1-9]`).
 ### Verification after renumbering
 
 ```bash
-# Every slide class must be unique and consecutive
-grep -oP 'class="[^"]*slide-\d+' deck.html | sort | uniq -c
+# Identity uniqueness: check data-slide-id values if they exist
+grep -oP 'data-slide-id="[^"]*"' deck.html | sort | uniq -d
+# (Output empty = all unique; shows duplicates if any)
 
-# Every expected identity must appear exactly once
-for n in $(seq 1 $NEW_COUNT); do
-  grep -c "slide-$(printf '%02d' $n)" deck.html
-done
+# Numbered-class identity: extract slide-NN from section elements only
+grep -oP '<section[^>]*class="[^"]*slide-\d+[^"]*"[^>]*>' deck.html |
+  grep -oP 'slide-\d+' | sort | uniq -c
+# Expected: each number should appear exactly once
+
+# Verify identity count matches expected total
+if [ "$(grep -oP '<section[^>]*class="[^"]*slide[^"]*"[^>]*>' deck.html |
+         grep -c 'slide-\d')" -eq "$NEW_COUNT" ]; then
+  echo "OK: $NEW_COUNT identities found"
+fi
+
+# Counter text consistency (if deck uses static counters)
+grep -oP '\b\d{2}\s*/\s*\d{2}\b' deck.html | sort -u
+# Verify each counter pair matches the expected totals
 ```
+
+### Split heuristics
+
+The following observations from real-world decks are
+**reference heuristics**, not general failure conditions.
+Evaluate them in context:
+
+- If a text column has fewer than roughly 12 CJK characters
+  per line at reading size, the column may be too wide for
+  its content; splitting could improve readability.
+- If an image is visually smaller than ~30% of its column
+  width, it may be undersized for its container.
+- Cards, tables, or panels whose content is visibly clipped
+  should be split or restructured regardless of numeric
+  heuristics.
+- When total content exceeds the authored stage content area
+  (determined by the deck's CSS variables and container
+  dimensions), splitting is required — not heuristic.
 
 ---
 
