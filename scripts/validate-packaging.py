@@ -15,16 +15,17 @@ Checks:
    asset directory.
 8. No workflow claims universal compatibility with arbitrary 1920×1080
    HTML decks (claims specific to Frontend Slides are accepted).
-9. Numbered-slide examples and regexes work for 8, 12, and 20 slides.
-|10. Reference links remain relative and use shallow, directly discoverable
-|    paths.
-|11. Marketplace command syntax (no leading |).
-|12. No 'pkill -f' in references (PID-scoped cleanup).
-|13. Split rules use heuristics, not automatic thresholds.
-|14. grep flavor correctness (no bare \\d without -P or -E in bash).
-|15. Fixture tests exist for numbered-slide operations.
-|
-|Exit 0 on success, non-zero on failure.
+# 9. Numbered-slide examples and regexes work for 8, 12, and 20 slides.
+# 10. Reference links remain relative and use shallow, directly discoverable
+#     paths.
+# 11. Marketplace command syntax (no leading |).
+# 12. No 'pkill -f' in references (PID-scoped cleanup).
+# 13. Split rules use heuristics, not automatic thresholds.
+# 14. grep flavor correctness (no bare \\d without -P or -E in bash).
+# 15. Fixture tests exist for numbered-slide operations.
+# 16. Foreground server blocks detected.
+#
+# Exit 0 on success, non-zero on failure.
 """
 
 import os
@@ -188,10 +189,7 @@ if os.path.exists(README_MD):
     install_urls = []
     attribution_urls = []
 
-    for url in sorted(set(github_urls)):
-        # URLs inside attribution / upstream / credits context
-        # Check only the line the URL appears on plus previous line
-        # to avoid false attribution from nearby sections.
+    for url in github_urls:  # FSL-152: check every occurrence independently
         url_line = None
         for i, line in enumerate(readme.split("\n")):
             if url in line:
@@ -228,27 +226,33 @@ if os.path.exists(README_MD):
     if not install_fail:
         print("  OK: All install URLs point to the fork")
 
+# FSL-153: Build set of all Markdown files to scan
+md_scan_paths = set()
+for root_dir, dirs, files in os.walk(REPO_ROOT):
+    dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__']
+    for f in files:
+        if f.endswith('.md'):
+            md_scan_paths.add(os.path.join(root_dir, f))
+
 # ---------------------------------------------------------------------------
-# 6. No 'git push origin main'
+# 6. No unsafe git push in any Markdown
 # ---------------------------------------------------------------------------
 print("\n--- Check 6: No unsafe git push ---")
-for fpath in [SKILL_MD, README_MD]:
-    if not os.path.exists(fpath):
-        continue
+unsafe_found = False
+for fpath in sorted(md_scan_paths):
     with open(fpath) as f:
         content = f.read()
     if 'git push origin main' in content:
-        err(f"{os.path.basename(fpath)} contains 'git push origin main'")
-    else:
-        print(f"  OK: {os.path.basename(fpath)} — no 'git push origin main'")
+        err(f"PKG-UNSAFE-GIT-PUSH: {os.path.relpath(fpath, REPO_ROOT)} contains 'git push origin main'")
+        unsafe_found = True
+if not unsafe_found:
+    print("  OK: No 'git push origin main' in any Markdown")
 
 # ---------------------------------------------------------------------------
-# 7. No broad staging
+# 7. No broad staging in any Markdown
 # ---------------------------------------------------------------------------
 print("\n--- Check 7: No unsafe broad staging ---")
-for fpath in [SKILL_MD, README_MD]:
-    if not os.path.exists(fpath):
-        continue
+for fpath in sorted(md_scan_paths):
     with open(fpath) as f:
         content = f.read()
     found_broad = False
@@ -257,7 +261,7 @@ for fpath in [SKILL_MD, README_MD]:
             err(f"{os.path.basename(fpath)} contains '{pattern}'")
             found_broad = True
     if not found_broad:
-        print(f"  OK: {os.path.basename(fpath)} — no broad staging examples")
+        pass  # omit per-file OK for brevity
 
 # ---------------------------------------------------------------------------
 # 8. No universal-claim statements
